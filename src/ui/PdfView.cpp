@@ -806,7 +806,14 @@ void PdfView::keyPressEvent(QKeyEvent *e)
     case Qt::Key_Left:
     case Qt::Key_Right:     // turn the page; a page wider than the view is moved sideways instead, as before
         if (horizontalScrollBar()->maximum() > 0 || (e->modifiers() & ~Qt::KeypadModifier)) break;
-        gotoPage(qBound(0, currentPage() + (e->key() == Qt::Key_Right ? 1 : -1), doc_->pageCount() - 1), 0, false);
+        if (pageRects_.isEmpty()) return;
+        {
+            // Count from the page at the top of the view, where gotoPage() puts a page (8 px down), not from
+            // currentPage(), which looks a third of the way down: zoomed out, that is a later page, and Left
+            // went to the top of the page before it, which brought the same page back to the third: stuck.
+            const int top = qMax(0, pageAt(QPointF(viewport()->width() / 2.0, 10), true));
+            gotoPage(qBound(0, top + (e->key() == Qt::Key_Right ? 1 : -1), int(pageRects_.size()) - 1), 0, false);
+        }
         return;
     default: break;
     }

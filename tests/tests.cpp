@@ -228,6 +228,30 @@ int main(int argc, char **argv)
         QApplication::sendEvent(v, &left);
         QApplication::sendEvent(v, &left);
         CHECK(v->currentPage() == 1);
+        // zoomed out so far that a page is shorter than a third of the view: Left used to get stuck
+        const double z0 = v->zoom();
+        v->setZoom(0.2);
+        wait(200);
+        QScrollBar *sb = v->verticalScrollBar();
+        auto topOf = [&](int page) {      // where the view goes for the top of a page
+            const int was = sb->value();
+            v->gotoPage(page, 0, false);
+            const int to = sb->value();
+            sb->setValue(was);
+            return to;
+        };
+        v->gotoPage(0, 0, false);
+        CHECK(sb->maximum() > topOf(2) && v->currentPage() > 0);    // the third of the view is on a later page
+        QApplication::sendEvent(v, &right);
+        CHECK(sb->value() == topOf(1));
+        QApplication::sendEvent(v, &right);
+        CHECK(sb->value() == topOf(2));
+        QApplication::sendEvent(v, &left);
+        CHECK(sb->value() == topOf(1));
+        QApplication::sendEvent(v, &left);
+        CHECK(sb->value() == topOf(0));
+        v->setZoom(z0);
+        wait(200);
         v->verticalScrollBar()->setValue(at);
     }
 
