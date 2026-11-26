@@ -9,7 +9,9 @@
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QTextLayout>
+#include <QStyle>
 #include <QToolButton>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -45,6 +47,19 @@ static int textHeight(const QString &text, const QFont &font, int width)
     return int(std::ceil(h));
 }
 
+QVector<qreal> stackNotes(const QVector<qreal> &want, const QVector<int> &heights, int gap, int pinned)
+{
+    QVector<qreal> top(want.size());
+    qreal bottom = -1e9;
+    for (int i = 0; i < want.size(); ++i) {
+        top[i] = i == pinned ? want[i] : qMax(want[i], bottom + gap);
+        bottom = top[i] + heights[i];
+    }
+    // the cards before the pinned one that are now in its way move up, as few of them as needed
+    for (int i = pinned - 1; i >= 0 && top[i] + heights[i] + gap > top[i + 1]; --i) top[i] = top[i + 1] - gap - heights[i];
+    return top;
+}
+
 // ------------------------------------------------------------------ NoteCard
 NoteCard::NoteCard(const MarkupNote &n, const QString &excerpt, QWidget *parent) : QFrame(parent), note_(n)
 {
@@ -67,6 +82,8 @@ NoteCard::NoteCard(const MarkupNote &n, const QString &excerpt, QWidget *parent)
     edit_->setStyleSheet("QPlainTextEdit{background:transparent;border:none;padding:0;}");
     edit_->document()->setDocumentMargin(0);
     edit_->installEventFilter(this);
+    edit_->viewport()->installEventFilter(this);
+    edit_->viewport()->setCursor(Qt::IBeamCursor);
     meta_ = new QLabel(this);
     f.setItalic(false);
     meta_->setFont(f);
@@ -138,14 +155,23 @@ void NoteCard::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing);
     QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     p.setPen(QPen(isLit() ? noteLineColor(note_.color) : palette().color(QPalette::Mid), isLit() ? 1.5 : 1));
-    p.setBrush(palette().color(QPalette::Base));
+    // Del and the arrow keys act on the notes while the sidebar has the keyboard, and on the page otherwise: the
+    // note the keyboard acts on shows it with a tint of its marking's colour. So does the note being written,
+    // whose text cursor alone is easy to miss.
+    QColor bg = palette().color(QPalette::Base);
+    if (keyboard_ || editing_) {
+        const qreal t = bg.lightness() < 128 ? 0.18 : 0.24;     // less on a dark card, where yellow soon turns olive
+        bg = QColor::fromRgbF(bg.redF() + (note_.color.redF() - bg.redF()) * t, bg.greenF() + (note_.color.greenF() - bg.greenF()) * t,
+                              bg.blueF() + (note_.color.blueF() - bg.blueF()) * t);
+    }
+    p.setBrush(bg);
     p.drawRoundedRect(r, 7, 7);
     p.setPen(Qt::NoPen);
     p.setBrush(note_.color);
     p.drawRoundedRect(QRectF(r.left() + 3, r.top() + 6, 4, r.height() - 12), 2, 2);   // colour of the marking
 }
 
-// Not editing: the text is only shown, and a click anywhere on the card starts editing.
+// Not editing: the text is only shown. A click on it starts editing, a click beside it selects the note.
 void NoteCard::setEditing(bool on)
 {
     editing_ = on;
@@ -153,8 +179,14 @@ void NoteCard::setEditing(bool on)
     edit_->setTextInteractionFlags(on ? Qt::TextEditorInteraction : Qt::NoTextInteraction);
     edit_->setFocusPolicy(on ? Qt::StrongFocus : Qt::NoFocus);
     edit_->setContextMenuPolicy(on ? Qt::DefaultContextMenu : Qt::NoContextMenu);
-    edit_->viewport()->setCursor(on ? Qt::IBeamCursor : Qt::PointingHandCursor);
     fitted_ = 0;
+    update();
+}
+
+void NoteCard::setKeyboard(bool on)
+{
+    if (on == keyboard_) return;
+    keyboard_ = on;
     update();
 }
 
@@ -194,7 +226,9 @@ void NoteCard::finish(bool keep)
     if (!editing_) return;
     QString text = edit_->toPlainText().trimmed();
     setEditing(false);
-    edit_->clearFocus();
+    // Finished with Esc or Ctrl+Enter: the keyboard goes to the sidebar, where the arrow keys go from note to
+    // note. Finished because the keyboard went elsewhere, perhaps to another note's text: leave it there.
+    if (edit_->hasFocus()) parentWidget()->setFocus();
     edit_->setPlainText(note_.text);
     fitWidth(width());
     if (keep && text != note_.text) emit committed(note_.page, note_.id, text);
@@ -203,6 +237,10 @@ void NoteCard::finish(bool keep)
 
 bool NoteCard::eventFilter(QObject *o, QEvent *e)
 {
+    if (o == edit_->viewport() && !editing_ && e->type() == QEvent::MouseButtonPress && static_cast<QMouseEvent *>(e)->button() == Qt::LeftButton) {
+        startEditing();
+        return true;
+    }
     if (o == edit_ && editing_) {
         if (e->type() == QEvent::KeyPress) {
             auto *ke = static_cast<QKeyEvent *>(e);
@@ -222,18 +260,21 @@ bool NoteCard::eventFilter(QObject *o, QEvent *e)
 
 void NoteCard::mousePressEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton) startEditing();
+    if (e->button() == Qt::LeftButton) emit clicked();
     QFrame::mousePressEvent(e);
+}
+
+void NoteCard::removeNote()
+{
+    finish(false);
+    emit committed(note_.page, note_.id, QString());
 }
 
 void NoteCard::contextMenuEvent(QContextMenuEvent *e)
 {
     QMenu m(this);
     m.addAction(tr("Edit note"), this, &NoteCard::startEditing);
-    m.addAction(tr("Delete note"), this, [this] {
-        finish(false);
-        emit committed(note_.page, note_.id, QString());
-    });
+    m.addAction(tr("Delete note"), this, &NoteCard::removeNote);
     m.addAction(tr("Delete marking and note"), this, [this] { emit deleteMarking(note_.page, note_.id); });
     m.exec(e->globalPos());
 }
@@ -245,6 +286,17 @@ NotesPanel::NotesPanel(std::shared_ptr<Document> doc, PdfView *view, QWidget *pa
     setAutoFillBackground(true);
     setBackgroundRole(QPalette::Window);
     setMinimumWidth(170);
+    setFocusPolicy(Qt::ClickFocus);
+    slide_ = new QVariantAnimation(this);
+    slide_->setStartValue(0.0);
+    slide_->setEndValue(1.0);
+    slide_->setEasingCurve(QEasingCurve::OutCubic);
+    connect(slide_, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+        for (auto it = sliding_.cbegin(); it != sliding_.cend(); ++it)
+            it.key()->move(kSide, int(std::lround(it->first + (it->second - it->first) * v.toDouble())));
+        update();       // the lines to the cards
+    });
+    connect(slide_, &QVariantAnimation::finished, this, [this] { sliding_.clear(); });
     connect(view_, &PdfView::viewChanged, this, &NotesPanel::relayout);
     for (QToolButton **hint : {&above_, &below_}) {
         auto *b = *hint = new QToolButton(this);
@@ -253,16 +305,19 @@ NotesPanel::NotesPanel(std::shared_ptr<Document> doc, PdfView *view, QWidget *pa
                          "QToolButton:hover{border-color:palette(highlight);}");
         b->hide();
         connect(b, &QToolButton::clicked, this, [this, b] {
-            for (const MarkupNote &m : std::as_const(notes_)) {
-                if (m.id != (b == above_ ? aboveId_ : belowId_)) continue;
-                view_->gotoPage(m.page, qMax(0.0, lineYOf(m) - 60));
-                view_->selectAnnot(m.page, m.id);       // lit: which of the notes now in view it went to
-                break;
-            }
+            for (const MarkupNote &m : std::as_const(notes_))
+                if (m.id == (b == above_ ? aboveId_ : belowId_)) {
+                    goTo(m, true);
+                    break;
+                }
         });
     }
     connect(view_, &PdfView::noteHovered, this, [this](int id) { hoveredId_ = id; updateLit(); });
-    connect(view_, &PdfView::noteSelected, this, [this](int id) { selectedId_ = id; updateLit(); });
+    connect(view_, &PdfView::noteSelected, this, [this](int id) {
+        selectedId_ = id;
+        updateLit();
+        relayout();     // the selected note moves to the height of its marking
+    });
     connect(view_, &PdfView::notePlaced, this, [this](int id) { placedId_ = id; });
 }
 
@@ -301,6 +356,10 @@ void NotesPanel::reload()
             connect(c, &NoteCard::heightChanged, this, &NotesPanel::relayout);
             // the note being written is the selected one: a marking selected before must not stay lit
             connect(c, &NoteCard::editingStarted, this, [this, c] { view_->selectAnnot(c->note().page, c->note().id); });
+            connect(c, &NoteCard::clicked, this, [this, c] {
+                view_->selectAnnot(c->note().page, c->note().id);
+                setFocus();
+            });
             connect(c, &NoteCard::hovered, this, [this, id = m.id](bool on) {
                 if (!on && hoveredId_ != id) return;
                 hoveredId_ = on ? id : 0;
@@ -317,6 +376,7 @@ void NotesPanel::reload()
                     else doc_->setAnnotContents(page, id, text);
                 } catch (const PdfError &) {}
                 if (placedId_ == id) placedId_ = 0;
+                if (text.isEmpty()) view_->setFocus();      // its card goes: nothing here for the keyboard to act on
                 reload();
             });
             connect(c, &NoteCard::cancelled, this, [this](int id) {
@@ -329,6 +389,7 @@ void NotesPanel::reload()
                     } catch (const PdfError &) {}
                 }
                 if (placedId_ == id) placedId_ = 0;
+                if (!c || c->note().text.isEmpty()) view_->setFocus();     // a note begun and given up: back to its marking
                 QTimer::singleShot(0, this, &NotesPanel::reload);
             });
             connect(c, &NoteCard::deleteMarking, this, [this](int page, int id) {
@@ -343,8 +404,17 @@ void NotesPanel::reload()
             c->setExcerpt(excerptFor(m));
         }
     }
+    // One order for everything: the cards are stacked in it and the arrow keys walk it. Reading order, by page,
+    // then by height, then from the left. (Sorting the cards by their rounded pixel height instead let two notes
+    // on one text line come out in another order than the keys took them in.)
+    std::sort(notes_.begin(), notes_.end(), [this](const MarkupNote &a, const MarkupNote &b) {
+        if (a.page != b.page) return a.page < b.page;
+        const qreal ya = lineYOf(a), yb = lineYOf(b);
+        return ya != yb ? ya < yb : a.anchor.x() != b.anchor.x() ? a.anchor.x() < b.anchor.x() : a.id < b.id;
+    });
     for (auto it = cards_.begin(); it != cards_.end();) {
         if (!keep.contains(it.key()) && !it.value()->isEditing()) {
+            sliding_.remove(it.value());
             it.value()->deleteLater();
             it = cards_.erase(it);
         } else
@@ -405,24 +475,107 @@ void NotesPanel::relayout()
             if (y < yBelow) { yBelow = y; belowId_ = m.id; }
         }
     }
-    std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) { return a.y < b.y; });
-    qreal bottom = -1e9;
-    for (const Item &it : std::as_const(items)) {
-        it.c->fitWidth(w);
-        qreal top = qMax(it.y - 14, bottom + kGapY);
-        bottom = top + it.c->height();
-        bool visible = bottom > -200 && top < height() + 200;
+    QVector<qreal> want;
+    QVector<int> heights;
+    int pinned = -1;        // the note being written, else the selected one
+    for (int i = 0; i < items.size(); ++i) {
+        NoteCard *c = items[i].c;
+        c->fitWidth(w);
+        want.push_back(items[i].y - 14);
+        heights.push_back(c->height());
+        if (c->isEditing() || (c->note().id == selectedId_ && pinned < 0)) pinned = i;
+    }
+    const QVector<qreal> tops = stackNotes(want, heights, kGapY, pinned);
+    const int pinnedId = pinned >= 0 ? items[pinned].c->note().id : 0;
+    // short, and not at all where the system has animations switched off
+    const int ms = qMin(120, style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, this));
+    // Slide when another note became the pinned one. If the goals change again while the cards are on their way
+    // (a card grew, the view moved), they set off anew from where they are, so that none jumps back.
+    bool retarget = false;
+    for (int i = 0; i < items.size() && !retarget; ++i)
+        retarget = sliding_.contains(items[i].c) && sliding_[items[i].c].second != int(tops[i]);
+    const bool start = (pinnedId != pinnedId_ || retarget) && isVisible() && ms > 0;
+    pinnedId_ = pinnedId;
+    if (start) sliding_.clear();
+    for (int i = 0; i < items.size(); ++i) {
+        const Item &it = items[i];
+        bool visible = tops[i] + it.c->height() > -200 && tops[i] < height() + 200;
         if (visible || it.c->isEditing()) {
-            it.c->move(kSide, int(top));
+            const int to = int(tops[i]);
+            if (start && it.c->isVisible() && it.c->y() != to) sliding_.insert(it.c, {it.c->y(), to});
+            else if (!sliding_.contains(it.c)) it.c->move(kSide, to);
             it.c->show();
             placed_.push_back({it.y, it.c});
-        } else
+        } else {
+            sliding_.remove(it.c);
             it.c->hide();
+        }
+    }
+    if (start && !sliding_.isEmpty()) {
+        slide_->stop();
+        slide_->setDuration(ms);
+        slide_->start();
     }
     showHint(above_, true, nAbove, aboveId_);
     showHint(below_, false, nBelow, belowId_);
     updateLinks();
     update();
+}
+
+void NotesPanel::focusInEvent(QFocusEvent *e)
+{
+    QWidget::focusInEvent(e);
+    updateLit();
+}
+
+void NotesPanel::focusOutEvent(QFocusEvent *e)
+{
+    QWidget::focusOutEvent(e);
+    updateLit();
+}
+
+void NotesPanel::goTo(const MarkupNote &n, bool always)
+{
+    const qreal y = mapFromGlobal(view_->viewport()->mapToGlobal(view_->pageToView(n.page, QPointF(n.anchor.x(), lineYOf(n))).toPoint())).y();
+    if (always || y < 20 || y > height() - 40) view_->gotoPage(n.page, qMax(0.0, lineYOf(n) - 60));
+    view_->selectAnnot(n.page, n.id);       // lit, and its card at the height of its marking
+}
+
+// With the keyboard in the sidebar (after a click on a note): Up and Down go to the previous and the
+// next note in the document, Enter opens the selected one, Del removes it, Esc goes back to the page.
+void NotesPanel::keyPressEvent(QKeyEvent *e)
+{
+    QVector<MarkupNote> order;      // notes_ is in reading order
+    for (const MarkupNote &m : std::as_const(notes_))
+        if (cards_.contains(m.id)) order.push_back(m);
+    int at = -1;
+    for (int i = 0; i < order.size(); ++i)
+        if (order[i].id == selectedId_) at = i;
+    switch (e->key()) {
+    case Qt::Key_Up:
+    case Qt::Key_Down: {
+        const int to = at < 0 ? (e->key() == Qt::Key_Down ? 0 : int(order.size()) - 1) : at + (e->key() == Qt::Key_Down ? 1 : -1);
+        if (to >= 0 && to < order.size()) goTo(order[to], false);
+        return;
+    }
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        if (at >= 0) cards_.value(order[at].id)->startEditing();
+        else QCoreApplication::sendEvent(view_, e);     // a selected marking without a note: the page opens one
+        return;
+    case Qt::Key_Delete:        // not Backspace: too easily pressed in the belief of being in a text field
+        if (at >= 0) {
+            const int next = at + 1 < order.size() ? at + 1 : at - 1;
+            cards_.value(order[at].id)->removeNote();
+            if (next >= 0) {        // stay among the notes
+                goTo(order[next], false);
+                setFocus();
+            }
+        }
+        return;
+    case Qt::Key_Escape: view_->setFocus(); return;
+    default: QWidget::keyPressEvent(e);
+    }
 }
 
 // A hint at the top or bottom edge that there are notes further up or down; a click goes to the
@@ -455,7 +608,10 @@ void NotesPanel::updateLinks()
 
 void NotesPanel::updateLit()
 {
-    for (auto it = cards_.cbegin(); it != cards_.cend(); ++it) it.value()->setLit(it.key() == hoveredId_ || it.key() == selectedId_);
+    for (auto it = cards_.cbegin(); it != cards_.cend(); ++it) {
+        it.value()->setLit(it.key() == hoveredId_ || it.key() == selectedId_);
+        it.value()->setKeyboard(it.key() == selectedId_ && hasFocus());
+    }
     updateLinks();
     update();
 }

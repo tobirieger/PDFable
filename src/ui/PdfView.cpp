@@ -966,6 +966,11 @@ void PdfView::keyPressEvent(QKeyEvent *e)
     case Qt::Key_Escape: cancelModes(); return;
     case Qt::Key_Delete:
     case Qt::Key_Backspace: deleteSelectedAnnot(); return;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:     // the note of the selected marking, sticky note or stroke, like a double-click on it
+        if (annPage_ < 0 || isPreview_ || !(isMarkup(ann_.kind) || ann_.kind == AnnotKind::Note || ann_.kind == AnnotKind::Ink)) break;
+        emit noteRequested(annPage_, ann_.id);
+        return;
     case Qt::Key_PageDown:
     case Qt::Key_Space: v->setValue(v->value() + (e->modifiers() & Qt::ShiftModifier ? -1 : 1) * int(viewport()->height() * 0.9)); return;
     case Qt::Key_PageUp: v->setValue(v->value() - int(viewport()->height() * 0.9)); return;
@@ -1157,8 +1162,12 @@ void PdfView::press(const Ptr &e)
             selQuads_.clear();
             return;
         }
-        clearAnnotSelection();
-        if (const LinkInfo *l = linkAt(pg, pt)) {
+        // On a text marking the release decides: a click selects it. Dropping the selection here first would make
+        // the Notes sidebar lay its cards out twice, once for nothing selected and once for the new note.
+        const int mark = markupAt(pg, pt);
+        const LinkInfo *l = linkAt(pg, pt);
+        if (!mark || l) clearAnnotSelection();
+        if (l) {
             pressLink_ = *l;
             drag_ = Drag::LinkClick;
             return;
@@ -1168,7 +1177,7 @@ void PdfView::press(const Ptr &e)
         selA_ = selB_ = pt;
         selQuads_.clear();
         pressMarkupPage_ = pg;
-        pressMarkupId_ = markupAt(pg, pt);
+        pressMarkupId_ = mark;
         viewport()->update();
         break;
     }
@@ -1260,8 +1269,11 @@ void PdfView::release(const Ptr &e)
         if (selQuads_.isEmpty()) {
             selPage_ = -1;
             if (pressMarkupId_ && QLineF(pressPos_, e.pos).length() < kTapSlop && !isPreview_) clickMarkup(pressMarkupPage_, pressMarkupId_, e);
-        } else
+            else clearAnnotSelection();
+        } else {
+            clearAnnotSelection();      // text was selected instead: the press on a marking had left the selection alone
             showSelBar(e.pos);
+        }
         pressMarkupId_ = 0;
         break;
     case Drag::AnnotMove:

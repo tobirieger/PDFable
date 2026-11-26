@@ -823,6 +823,12 @@ int main(int argc, char **argv)
     std::printf("     tabs=%d windows=%d\n", w->tabCount(), int(MainWindow::windows().size()));
     CHECK(w->tabCount() == 2 && MainWindow::windows().size() == 1);
 
+    // where the cards of the notes go: they give way downwards, but the selected one sits at its marking
+    CHECK(stackNotes({10, 20, 200}, {50, 50, 50}, 8) == QVector<qreal>({10, 68, 200}));
+    CHECK(stackNotes({10, 20, 200}, {50, 50, 50}, 8, 1) == QVector<qreal>({-38, 20, 200}));
+    CHECK(stackNotes({10, 20, 30}, {50, 50, 50}, 8, 2) == QVector<qreal>({-86, -28, 30}));
+    CHECK(stackNotes({10, 100, 300}, {50, 50, 50}, 8, 2) == QVector<qreal>({10, 100, 300}));         // nothing in the way
+
     // notes on markings: highlight -> note editor opens in the Notes tab -> typed text is stored
     {
         DocumentTab *nt = w->currentTab();
@@ -897,6 +903,16 @@ int main(int argc, char **argv)
         nv->testPointer(2, c, -1, 32010);
         wait(50);
         CHECK(!np->card(id2));                            // a click only selects the marking
+        // Enter opens a note for it; given up with Esc, Enter must open one again
+        for (int round = 0; round < 2; ++round) {
+            QKeyEvent open(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier), giveUp(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(round == 0 ? nv : QApplication::focusWidget(), &open);
+            wait(50);
+            CHECK(np->card(id2) && np->card(id2)->isEditing());
+            if (np->card(id2)) QApplication::sendEvent(np->card(id2)->findChild<QPlainTextEdit *>(), &giveUp);
+            wait(300);
+            CHECK(!np->card(id2));
+        }
         QMouseEvent dbl(QEvent::MouseButtonDblClick, c, nv->viewport()->mapToGlobal(c), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(nv->viewport(), &dbl);
         wait(50);
@@ -959,6 +975,23 @@ int main(int argc, char **argv)
             CHECK(np->noteCount() == 2);
             nv->testPointer(0, off, -1, 34000);           // back to the mouse
             nv->testPointer(2, off, -1, 34010);
+            // going from one marking to the other by clicks on the page selects the new one in one step, without
+            // nothing being selected in between (the Notes sidebar would lay its cards out twice)
+            {
+                QApplication::sendEvent(nv, &leave);      // the pen hovered over the first marking
+                QPointF first = nv->pageToView(1, QPointF(150, 258));
+                nv->testPointer(0, first, -1, 34600);
+                nv->testPointer(2, first, -1, 34610);
+                QVector<int> told;
+                auto conn = QObject::connect(nv, &PdfView::noteSelected, [&](int n) { told.push_back(n); });
+                nv->testPointer(0, on, -1, 34700);
+                nv->testPointer(2, on, -1, 34710);
+                QObject::disconnect(conn);
+                CHECK(told == QVector<int>({id2}));
+                nv->testPointer(0, off, -1, 34800);       // beside any marking: nothing selected
+                nv->testPointer(2, off, -1, 34810);
+                CHECK(!np->card(id)->isLit() && !np->card(id2)->isLit());
+            }
             // writing another note moves the selection to its marking
             QApplication::sendEvent(nv, &leave);          // the pen hovered over the first marking
             // undo and redo keep the selection in the view while the marking is still there unchanged, and the
@@ -982,10 +1015,72 @@ int main(int argc, char **argv)
                 QMouseEvent click(QEvent::MouseButtonPress, in, n1->mapToGlobal(in), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(n1, &click);
                 wait(50);
-                CHECK(n1->isEditing() && !n2->isLit());
+                CHECK(n1->isLit() && !n1->isEditing() && !n2->isLit() && np->hasFocus());     // beside the text: selected only
+                // the selected note is tinted in its marking's colour while the sidebar has the keyboard
+                const QImage held = n1->grab().toImage();
+                const QPoint inside(n1->width() - 6, n1->height() / 2);       // card background, clear of text and outline
+                nv->setFocus();
+                const QImage plain = n1->grab().toImage();
+                CHECK(n1->isLit() && plain.pixel(inside) != held.pixel(inside));
+                np->setFocus();
+                CHECK(n1->grab().toImage() == held);
+                // with the keyboard in the sidebar, Up and Down go from note to note and Enter opens one
+                QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier), up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+                QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(np, &down);
+                CHECK(n2->isLit() && !n1->isLit());
+                QApplication::sendEvent(np, &down);           // the last note: stays
+                QApplication::sendEvent(np, &up);
+                CHECK(n1->isLit() && !n2->isLit());
+                QApplication::sendEvent(np, &enter);
+                wait(50);
+                CHECK(n1->isEditing());
                 QApplication::sendEvent(n1->findChild<QPlainTextEdit *>(), &esc);
                 wait(100);
-                CHECK(n1->isLit() && !n1->isEditing() && !n2->isLit());
+                CHECK(n1->isLit() && !n1->isEditing() && !n2->isLit() && np->hasFocus());
+                // Enter opens the note of the selected marking also with the keyboard on the page
+                nv->setFocus();
+                QApplication::sendEvent(nv, &enter);
+                wait(50);
+                CHECK(n1->isEditing());
+                QApplication::sendEvent(n1->findChild<QPlainTextEdit *>(), &esc);
+                wait(200);
+                // a click on the text itself opens the note
+                QWidget *text = n2->findChild<QPlainTextEdit *>()->viewport();
+                QMouseEvent type(QEvent::MouseButtonPress, QPointF(5, 5), text->mapToGlobal(QPointF(5, 5)), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(text, &type);
+                wait(50);
+                CHECK(n2->isEditing() && n2->isLit() && !n1->isLit());
+                QApplication::sendEvent(n2->findChild<QPlainTextEdit *>(), &esc);
+                wait(100);
+                // a click on the text of another note while one is being written moves on to that note: it must not
+                // close both editors
+                auto typeInto = [&](NoteCard *c) {
+                    QWidget *tv = c->findChild<QPlainTextEdit *>()->viewport();
+                    QMouseEvent press(QEvent::MouseButtonPress, QPointF(5, 5), tv->mapToGlobal(QPointF(5, 5)), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(tv, &press);
+                    wait(200);
+                };
+                typeInto(n1);
+                CHECK(n1->isEditing() && !n2->isEditing());
+                CHECK(n1->grab().toImage().pixel(inside) == held.pixel(inside));       // the note being written is tinted the same
+                typeInto(n2);
+                CHECK(n2->isEditing() && n2->findChild<QPlainTextEdit *>()->hasFocus() && !n1->isEditing());
+                typeInto(n1);
+                CHECK(n1->isEditing() && n1->findChild<QPlainTextEdit *>()->hasFocus() && !n2->isEditing());
+                QApplication::sendEvent(n1->findChild<QPlainTextEdit *>(), &esc);
+                wait(100);
+                // Del removes the selected note, not its marking, and the next note becomes the selected one
+                QApplication::sendEvent(n1, &click);
+                QKeyEvent remove(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+                QApplication::sendEvent(np, &remove);
+                wait(400);
+                bool marked = false;
+                for (const AnnotInfo &a : nd->annots(1)) marked = marked || a.id == id;
+                CHECK(np->noteCount() == 1 && !np->card(id) && marked && n2->isLit());
+                nd->undo();
+                wait(400);
+                CHECK(np->noteCount() == 2 && np->card(id));
             }
         }
         nt->window()->grab().save(out + "/9c_notes.png");
@@ -1011,6 +1106,37 @@ int main(int argc, char **argv)
             nt->window()->grab().save(out + "/9h_hint.png");
             nv->gotoPage(1, 100, false);
             wait(200);
+        }
+        // Down goes through the notes in the order their cards are stacked in, also where two notes sit on one text
+        // line and the right one was made first
+        {
+            const int right = nd->addMarkup(1, AnnotKind::Highlight, {QPolygonF(QRectF(260, 322, 70, 12))}, QColor(140, 235, 130));
+            nd->setAnnotContents(1, right, "Right half of the line.");
+            const int left = nd->addMarkup(1, AnnotKind::Highlight, {QPolygonF(QRectF(80, 322, 70, 12))}, QColor(255, 235, 60));
+            nd->setAnnotContents(1, left, "Left half of the line.");
+            wait(400);
+            QPointF off = nv->pageToView(1, QPointF(40, 600));
+            nv->testPointer(0, off, -1, 36000);               // nothing selected: the cards are where they are by default
+            nv->testPointer(2, off, -1, 36010);
+            wait(200);
+            QVector<int> stacked = {id, id2, left, right};
+            std::sort(stacked.begin(), stacked.end(), [&](int a, int b) { return np->card(a)->y() < np->card(b)->y(); });
+            QVector<int> walked;
+            np->setFocus();
+            QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+            for (int i = 0; i < 4; ++i) {
+                QApplication::sendEvent(np, &down);
+                wait(200);
+                for (int n : {id, id2, left, right})
+                    if (np->card(n)->isLit()) walked.push_back(n);
+            }
+            std::printf("     stacked %d %d %d %d, walked %d %d %d %d (left %d, right %d)\n", stacked[0], stacked[1], stacked[2], stacked[3],
+                        walked.value(0), walked.value(1), walked.value(2), walked.value(3), left, right);
+            CHECK(walked == stacked && stacked.indexOf(left) + 1 == stacked.indexOf(right));
+            nv->testPointer(0, off, -1, 37000);
+            nv->testPointer(2, off, -1, 37010);
+            nd->removeAnnots(1, {left, right});
+            wait(400);
         }
         PdfView::setNoteAfterMarking(true);
     }

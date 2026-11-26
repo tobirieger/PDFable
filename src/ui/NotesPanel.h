@@ -12,6 +12,12 @@ class PdfView;
 class QLabel;
 class QPlainTextEdit;
 class QToolButton;
+class QVariantAnimation;
+
+// Where the cards of the notes go. Each wants to sit at the height of its marking (`want`, ascending) and
+// is `heights[i]` tall; cards must not overlap. Without a pinned card they give way downwards. The
+// pinned one (the selected note) sits exactly at its height, and the cards before it move up for it.
+QVector<qreal> stackNotes(const QVector<qreal> &want, const QVector<int> &heights, int gap, int pinned = -1);
 
 class NoteCard : public QFrame {
     Q_OBJECT
@@ -21,7 +27,9 @@ public:
     void setExcerpt(const QString &excerpt);    // the quoted text of the marking (empty: none)
     const ink::MarkupNote &note() const { return note_; }
     void startEditing();
+    void removeNote();                   // the note only: a marking or stroke stays, a sticky note goes with its text
     bool isEditing() const { return editing_; }
+    void setKeyboard(bool on);           // the selected note while the sidebar has the keyboard: tinted
     void setLit(bool on);                // its marking is selected, or the pointer is on either
     bool isLit() const { return editing_ || lit_; }      // shows the colour of its marking
     void fitWidth(int w);                // also sets the height: grows with the note, a long one scrolls
@@ -31,6 +39,7 @@ signals:
     void deleteMarking(int page, int id);
     void heightChanged();
     void editingStarted();
+    void clicked();                      // beside the text: select the note without editing it
     void hovered(bool on);
 protected:
     void enterEvent(QEnterEvent *e) override;
@@ -45,7 +54,7 @@ private:
     ink::MarkupNote note_;
     QLabel *excerpt_, *meta_;            // quoted text of the marking; author and date of the note
     QPlainTextEdit *edit_;               // shows the note and edits it, so both look the same
-    bool editing_ = false, lit_ = false;
+    bool editing_ = false, lit_ = false, keyboard_ = false;
     int fitted_ = 0;                     // width the height was computed for (0 = compute again)
 };
 
@@ -61,8 +70,12 @@ public:
 protected:
     void paintEvent(QPaintEvent *e) override;
     void resizeEvent(QResizeEvent *e) override;
+    void keyPressEvent(QKeyEvent *e) override;
+    void focusInEvent(QFocusEvent *e) override;
+    void focusOutEvent(QFocusEvent *e) override;
 private:
     void relayout();
+    void goTo(const ink::MarkupNote &n, bool always);    // select a note, and bring its marking into view
     void updateLinks();
     void updateLit();                    // after the hovered or the selected note changed
     QPointF anchorOf(const ink::MarkupNote &n) const;
@@ -79,6 +92,11 @@ private:
     QHash<int, QPair<QPointF, qreal>> lineYs_;   // per stroke: its anchor and the height its line runs at
     QVector<QPair<qreal, NoteCard *>> placed_;   // anchor y in panel coordinates, card
     int editingId_ = 0, hoveredId_ = 0, selectedId_ = 0;
+    // When another note becomes the selected one the cards slide to their new places, so that the eye
+    // can follow which went where. Scrolling and zooming move them at once: they must stay with the page.
+    QVariantAnimation *slide_;
+    QHash<NoteCard *, QPair<int, int>> sliding_;     // card: y it started from, y it is going to
+    int pinnedId_ = 0;
     int placedId_ = 0;                   // the sticky note just put on the page: removed again if it gets no text
     QToolButton *above_, *below_;        // "3 notes above": notes outside the part of the document in view
     int aboveId_ = 0, belowId_ = 0;      // the nearest of them, where a click on the hint goes
