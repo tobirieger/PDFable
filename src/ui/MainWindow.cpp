@@ -695,6 +695,7 @@ void MainWindow::addTab(DocumentTab *tab, int index)
     // every edit, undo and redo: Undo and Redo are greyed out while there is nothing to undo or redo
     connect(tab->doc(), &Document::pageChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
     connect(tab->doc(), &Document::structureChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
+    connect(tab->doc(), &Document::historyChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
     connect(tab, &DocumentTab::statusMessage, this, [this](const QString &m) { statusBar()->showMessage(m, 6000); });
     connect(tab->view(), &PdfView::currentPageChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
     connect(tab->view(), &PdfView::zoomChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
@@ -713,6 +714,7 @@ DocumentTab *MainWindow::takeTab(int index)
     tabs_->removeTab(index);
     tab->disconnect(this);
     tab->view()->disconnect(this);
+    tab->doc()->disconnect(this);       // as addTab() does: the tab may go to another window
     tab->setParent(nullptr);
     updateUi();
     return tab;

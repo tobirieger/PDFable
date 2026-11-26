@@ -578,6 +578,15 @@ int main(int argc, char **argv)
     CHECK(hitsBefore > 0 && v->searchCount() == hitsBefore);
     v->setSearch(QString());
     CHECK(!d->isModified());
+    // a fresh history: undo and redo asked for anyway (Undo/Redo out of date) do nothing and change nothing
+    {
+        int told = 0;
+        auto cn = QObject::connect(d, &Document::historyChanged, [&] { ++told; });
+        d->undo();
+        d->redo();
+        QObject::disconnect(cn);
+        CHECK(told == 2 && !d->isModified() && !d->canUndo() && !d->canRedo());
+    }
     CHECK(d->inkAnnots(0).size() == 4);
     CHECK(!d->inkAnnots(0)[0].data.strokes[0].w.isEmpty());
 

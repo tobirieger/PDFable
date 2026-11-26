@@ -1290,15 +1290,21 @@ void Document::noteHistory(fz_context *c)
 }
 void Document::undo()
 {
-    bool clean = false;
+    bool clean = false, none = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         fzrun([&](fz_context *c) {
-            pdf_undo(c, doc_);
+            // canUndo() may be out of date (see redo()): then there is nothing to do but say so
+            none = !pdf_can_undo(c, doc_);
+            if (!none) pdf_undo(c, doc_);
             noteHistory(c);
             int steps = 0;
             clean = pdf_undoredo_state(c, doc_, &steps) == 0;
         });
+    }
+    if (none) {
+        emit historyChanged();
+        return;
     }
     touched(-1, true);
     // The undo history starts afresh whenever the file is loaded or saved, and every edit is a step in it (MuPDF
@@ -1307,9 +1313,21 @@ void Document::undo()
 }
 void Document::redo()
 {
+    bool none = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
-        fzrun([&](fz_context *c) { pdf_redo(c, doc_); noteHistory(c); });
+        fzrun([&](fz_context *c) {
+            // canRedo() is noted after every edit, undo and redo, but MuPDF also drops the redo steps by itself when
+            // it changes the file on its own after an undo (new appearances of fields or annotations, say). Then the
+            // menu still offered Redo; now it is greyed out instead.
+            none = !pdf_can_redo(c, doc_);
+            if (!none) pdf_redo(c, doc_);
+            noteHistory(c);
+        });
+    }
+    if (none) {
+        emit historyChanged();
+        return;
     }
     touched(-1, true);
 }
