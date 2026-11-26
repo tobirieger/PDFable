@@ -3,6 +3,7 @@
 #include <mupdf/fitz/version.h>
 #include "Dialogs.h"
 #include "Theme.h"
+#include "Stroke.h"
 
 #include <QActionGroup>
 #include <QApplication>
@@ -554,6 +555,28 @@ void MainWindow::setInterfaceMode(Theme::Mode m)
     for (QWidget *top : QApplication::topLevelWidgets()) top->update();
 }
 
+namespace {
+// A stroke that goes from the lightest to full pressure, drawn as the pen would draw it.
+class PressurePreview : public QWidget {
+public:
+    PressurePreview() { setFixedSize(220, 44); }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        ink::InkStroke s;
+        const float base = 3.f;
+        const float thin = ink::StrokeBuilder::pressureThinnest(), thick = ink::StrokeBuilder::pressureThickest();
+        for (int i = 0; i <= 80; ++i) {
+            const double u = i / 80.0;
+            s.pts.push_back(QPointF(12 + u * (width() - 24), height() / 2.0 + 9 * std::sin(u * 2 * M_PI * 1.5)));
+            s.w.push_back(base * (thin + (thick - thin) * float(u)));
+        }
+        ink::paintInk(p, s, palette().color(QPalette::Text), base, false);
+    }
+};
+} // namespace
+
 void MainWindow::showPreferences()
 {
     QDialog d(this);
@@ -620,6 +643,41 @@ void MainWindow::showPreferences()
     defaults.push_back([=] { speed->setValue(toPos(0.8)); });
 
     section(tr("Pen, mouse and finger"));
+    // Pen pressure: the stroke width at the lightest and at full pressure, as % of the chosen width.
+    auto *preview = new PressurePreview;
+    auto pressureRow = [&](const QString &label, const char *name, int lo, int hi, std::function<float()> get,
+                           std::function<void(float)> set, float dflt, const QString &tip) {
+        auto *sl = new SizeSlider;
+        sl->setObjectName(name);
+        sl->setToolTip(tip);
+        auto *lab = new QLabel;
+        lab->setMinimumWidth(48);
+        auto toPos = [=](float f) { return int(std::lround((f * 100 - lo) / double(hi - lo) * 1000)); };
+        sl->setValue(toPos(get()));
+        lab->setText(QString("%1 %").arg(qRound(get() * 100)));
+        connect(sl, &SizeSlider::valueChanged, &d, [=](int pos) {
+            const float f = float(std::lround((lo + pos / 1000.0 * (hi - lo)) / 5) * 5) / 100;   // steps of 5 %
+            set(f);
+            lab->setText(QString("%1 %").arg(qRound(f * 100)));
+            preview->update();
+        });
+        auto *r = new QHBoxLayout;
+        r->addWidget(sl);
+        r->addWidget(lab);
+        form->addRow(label, r);
+        defaults.push_back([=] { sl->setValue(toPos(dflt)); });
+    };
+    pressureRow(tr("Lightest pressure"), "pressureThinnest", 10, 100, &ink::StrokeBuilder::pressureThinnest,
+                [](float f) {
+                    ink::StrokeBuilder::setPressureRange(f, ink::StrokeBuilder::pressureThickest());
+                    QSettings().setValue("pen/pressureMin", f);
+                }, 0.3f, tr("Stroke width when the pen barely touches, as a share of the chosen width."));
+    pressureRow(tr("Full pressure"), "pressureThickest", 100, 300, &ink::StrokeBuilder::pressureThickest,
+                [](float f) {
+                    ink::StrokeBuilder::setPressureRange(ink::StrokeBuilder::pressureThinnest(), f);
+                    QSettings().setValue("pen/pressureMax", f);
+                }, 1.7f, tr("Stroke width when the pen is pressed hard, as a share of the chosen width."));
+    form->addRow(QString(), preview);
     hint(tr("The pen and the mouse each keep their own tool: tap a toolbar button with the pen to set the pen's "
             "tool, click it with the mouse to set the mouse's tool. A finger always pans and zooms."));
 

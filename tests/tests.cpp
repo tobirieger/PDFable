@@ -101,6 +101,42 @@ int main(int argc, char **argv)
         std::printf("     rect %.0fx%.0f -> %.0fx%.0f\n", before.width(), before.height(), after.width(), after.height());
         CHECK(after.width() > before.width() * 1.2 && after.height() > before.height() * 1.2);
         CHECK(std::fabs(after.right() - before.right()) < 1e-6 && std::fabs(after.bottom() - before.bottom()) < 1e-6);
+        // a long thin box around a line of text, slightly unsteady, with an overshoot past the start
+        StrokeBuilder t;
+        t.begin({0, 0}, 0.5f, 0, 2, true, 1.5);
+        k = 0;
+        auto tseg = [&](QPointF a, QPointF e) {
+            for (int i = 1; i <= 60; ++i) t.add(a + (e - a) * (i / 60.0) + QPointF(0, 1.6 * std::sin(i * 0.21 + a.x())), 0.5f, ++k * 8);
+        };
+        tseg({0, 0}, {300, 0}); tseg({300, 0}, {300, 24}); tseg({300, 24}, {0, 24}); tseg({0, 24}, {0, 0}); tseg({0, 0}, {14, 0});
+        CHECK(t.snapToShape() && t.shape() == StrokeBuilder::Shape::Rect);
+        QRectF tb = QPolygonF(t.points()).boundingRect();
+        std::printf("     thin box %.1fx%.1f\n", tb.width(), tb.height());
+        CHECK(std::fabs(tb.width() - 300) < 4 && std::fabs(tb.height() - 24) < 4);
+        // a rectangle drawn clearly tilted (12 degrees) stays a tilted rectangle
+        StrokeBuilder q;
+        q.begin({0, 0}, 0.5f, 0, 2, true, 1.5);
+        k = 0;
+        const double th = 12 * M_PI / 180;
+        auto rot = [&](QPointF p) { return QPointF(p.x() * std::cos(th) - p.y() * std::sin(th), p.x() * std::sin(th) + p.y() * std::cos(th)); };
+        auto qseg = [&](QPointF a, QPointF e) { for (int i = 1; i <= 30; ++i) q.add(rot(a + (e - a) * (i / 30.0)) + QPointF(std::sin(i) * 0.6, 0), 0.5f, ++k * 8); };
+        qseg({0, 0}, {140, 0}); qseg({140, 0}, {140, 60}); qseg({140, 60}, {0, 60}); qseg({0, 60}, {3, 0});
+        CHECK(q.snapToShape() && q.shape() == StrokeBuilder::Shape::Rect);
+        const QVector<QPointF> qp = q.points();
+        const double edgeAngle = std::atan2(qp[1].y() - qp[0].y(), qp[1].x() - qp[0].x()) * 180 / M_PI;
+        std::printf("     tilted rectangle: first edge at %.1f degrees\n", edgeAngle);
+        CHECK(qp.size() == 5 && std::fabs(std::fabs(edgeAngle) - 12) < 2.5);
+        // pressure: the width runs from "lightest" to "full pressure" times the chosen width
+        StrokeBuilder::setPressureRange(0.3f, 1.7f);
+        StrokeBuilder pl, ph;
+        pl.begin({0, 0}, 0.0f, 0, 2, true, 1.5);
+        ph.begin({0, 0}, 1.0f, 0, 2, true, 1.5);
+        CHECK(std::fabs(pl.widths()[0] - 0.6f) < 1e-5 && std::fabs(ph.widths()[0] - 3.4f) < 1e-5);
+        StrokeBuilder::setPressureRange(0.5f, 2.5f);
+        pl.begin({0, 0}, 0.0f, 0, 2, true, 1.5);
+        ph.begin({0, 0}, 1.0f, 0, 2, true, 1.5);
+        CHECK(std::fabs(pl.widths()[0] - 1.0f) < 1e-5 && std::fabs(ph.widths()[0] - 5.0f) < 1e-5);
+        StrokeBuilder::setPressureRange(0.3f, 1.7f);
         StrokeBuilder z;   // a scribble must not be converted
         z.begin({0, 0}, 0.5f, 0, 2, true, 1.5);
         for (int i = 1; i <= 80; ++i) z.add({i * 2.0, 30 * std::sin(i * 0.5)}, 0.5f, i * 8);
@@ -1507,7 +1543,7 @@ int main(int argc, char **argv)
     // preferences: grouped under headings, and "Restore defaults" sets them back
     {
         QStringList headings;
-        double speedAfterRestore = -1, speedChanged = -1;
+        double speedAfterRestore = -1, speedChanged = -1, pressureChanged = -1, pressureAfterRestore = -1;
         bool found = false;
         QTimer::singleShot(300, [&] {
             QDialog *pd = nullptr;
@@ -1519,10 +1555,13 @@ int main(int argc, char **argv)
                 if (l->font().bold()) headings << l->text();
             auto *speed = pd->findChild<SizeSlider *>("scrollSpeed");
             speed->setValue(1000);
+            pd->findChild<SizeSlider *>("pressureThickest")->setValue(1000);
+            pressureChanged = StrokeBuilder::pressureThickest();
             speedChanged = PdfView::scrollSpeed();
             auto *bb = pd->findChild<QDialogButtonBox *>();
             bb->button(QDialogButtonBox::RestoreDefaults)->click();
             speedAfterRestore = PdfView::scrollSpeed();
+            pressureAfterRestore = StrokeBuilder::pressureThickest();
             pd->accept();
         });
         w->showPreferences();
@@ -1531,6 +1570,8 @@ int main(int argc, char **argv)
         CHECK(headings == QStringList({"Appearance", "Navigation", "Pen, mouse and finger", "Notes"}));
         CHECK(speedChanged > 1.9 && std::fabs(speedAfterRestore - 0.8) < 1e-9);
         CHECK(std::fabs(QSettings().value("view/scrollSpeed").toDouble() - 0.8) < 1e-9);
+        std::printf("     full pressure %.2f -> %.2f after Restore defaults\n", pressureChanged, pressureAfterRestore);
+        CHECK(std::fabs(pressureChanged - 3.0) < 1e-6 && std::fabs(pressureAfterRestore - 1.7) < 1e-6);
     }
 
 #ifdef PDFABLE_SIGNING

@@ -25,7 +25,14 @@ public:
     InkStroke result() const;
     float baseWidth() const { return base_; }
 
+    // Pen pressure: the width at the lightest and at full pressure, as factors of the chosen width
+    // (defaults 0.3 and 1.7). Applies to strokes begun afterwards.
+    static void setPressureRange(float thinnest, float thickest);
+    static float pressureThinnest();
+    static float pressureThickest();
+
 private:
+    float widthFor(float pressure) const;
     QVector<QPointF> f_;     // filtered input
     QVector<float> fw_;
     QVector<QPointF> out_;   // smooth output polyline

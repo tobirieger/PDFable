@@ -1,5 +1,6 @@
 #include "Creator.h"
 #include "MainWindow.h"
+#include "Stroke.h"
 #include "Theme.h"
 #include <QApplication>
 #include <QDir>
@@ -131,6 +132,8 @@ int main(int argc, char **argv)
     PdfView::setScrollSpeed(QSettings().value("view/scrollSpeed", 0.8).toDouble());
     PdfView::setNoteAfterMarking(QSettings().value("notes/afterMarking", true).toBool());
     ink::Document::setAuthor(QSettings().value("notes/author", ink::Document::defaultAuthor()).toString());
+    ink::StrokeBuilder::setPressureRange(QSettings().value("pen/pressureMin", 0.3).toFloat(),
+                                         QSettings().value("pen/pressureMax", 1.7).toFloat());
     if (creator) {          // started as "PDFable Creator": only the creator window
         openCreator(files);
         return app.exec();
