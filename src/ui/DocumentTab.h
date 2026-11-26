@@ -13,6 +13,16 @@ class QSplitter;
 class NotesPanel;
 class QFileSystemWatcher;
 
+class QPrinter;
+
+// Where a page goes on the sheet when printing, in points: the target rectangle on the paper, whether
+// the page is turned a quarter, and the scale (1 = actual size).
+struct PrintPlacement {
+    QRectF target;
+    bool rotated = false;
+    double scale = 1;
+};
+
 class DocumentTab : public QWidget {
     Q_OBJECT
 public:
@@ -25,6 +35,9 @@ public:
     bool saveAs(bool optimize = false);
     bool maybeSave();          // false = user cancelled
     void print();
+    // Prints pages [from, to] on an already set-up printer (used by print() and the self-test).
+    void printPages(QPrinter &printer, int from, int to);
+    static PrintPlacement printPlacement(QSizeF page, const QRectF &paper, const QRectF &printable);
     void showSearch();
     void closeSearch();                  // hide the search bar, drop the marks, back to the page
     void toggleSidebar();
