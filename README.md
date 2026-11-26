@@ -2,11 +2,12 @@
 
 A PDF reader and annotator for Windows pen devices, written in C++17 with Qt 6 Widgets and MuPDF.
 
-![PDFable with three highlighted passages, their notes in the Notes sidebar connected by fine lines, and a
-red pen loop drawn around an equation](docs/screenshot.png)
+![PDFable with three highlighted passages and a sticky note, their notes in the Notes sidebar connected by
+fine lines, and a red pen loop drawn around an equation](docs/screenshot.png)
 
-*Highlights in several colours, each with a note in the Notes sidebar at the height of its marking, and
-freehand pen ink.*
+*Highlights in several colours and a sticky note, each with its note in the Notes sidebar at the height of
+its marking, and freehand pen ink. The pointer is on the first highlight, so its note and line show its
+colour.*
 
 ![The same document with the Pages sidebar showing page previews that include the markings](docs/screenshot-pages.png)
 
@@ -48,8 +49,25 @@ freehand pen ink.*
 - **Notes on markings** (like Zotero): select text, pick a colour in the small bar (or press Ctrl+H) and
   type; the note appears in the sidebar's "Notes" tab at the height of the marking, joined to it by a fine
   line. Click a note to edit it (Ctrl+Enter or a click elsewhere saves, Esc cancels); right-click to delete.
-  Preferences decide whether the note editor opens right after marking or only when you click a marking.
+  Click a marking to select it (Del removes it); double-click it, or tap it twice with the pen, to write
+  or edit its note.
+  The lines are grey; a note shows the colour of its marking, on its line and around the marking, while
+  it is edited, its marking is selected or the pointer is on either, so notes at the same height can be
+  told apart. A long note scrolls inside its card.
+  Preferences decide whether the note editor opens right after marking or only on a double-click.
   Notes are stored as standard PDF annotation comments, so other PDF readers show them too.
+  When there are notes above or below the part of the document in view, a hint at the top or bottom of
+  the sidebar says how many; a click on it goes to the nearest and selects it.
+  A note records who wrote it and when, as other readers do, and its card shows both. The name is your
+  account's full name unless you change or clear it in Preferences.
+- **Notes on pen strokes**: double-click a pen or highlighter stroke with the Select tool (or right-click
+  it, "Add note") to give it a note in the Notes sidebar. The note belongs to that one stroke: it moves
+  with it and is removed with it, also by the eraser. Stored as the comment of the ink annotation.
+- **Sticky notes**: pick the Note tool (N) and click anywhere on the page, or right-click and choose "Add
+  note here": an icon marks the spot and its note is written in the Notes sidebar, like the note of a
+  marking. Click the icon to select it, drag it to move it, double-click it to edit the note; Del removes
+  it. A sticky note left without text disappears again. Stored as standard PDF text annotations, so other
+  PDF readers show them, and theirs appear in the sidebar.
 - **PDF forms**: fillable fields are tinted blue. Click a text field and type on the page (Tab / Shift+Tab
   jump between fields, Enter or a click elsewhere confirms, Esc cancels); checkboxes and radio buttons toggle
   on click; dropdowns and list boxes open a menu. Works with the Select and Hand tools.
@@ -171,7 +189,7 @@ resets the undo history.
 
 ## Shortcuts
 
-V select, H hand, P pen, M highlighter, E eraser, T text box, Ctrl+F find, Ctrl+H highlight selection,
+V select, H hand, P pen, M highlighter, E eraser, T text box, N sticky note, Ctrl+F find, Ctrl+H highlight selection,
 Ctrl+Shift+H handwritten signature, F4 sidebar, Ctrl+1/2/0 fit page / fit width / 100 %, Left/Right previous / next
 page, Alt+Left/Right history.
 

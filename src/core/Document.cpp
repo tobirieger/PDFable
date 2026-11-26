@@ -1,4 +1,9 @@
 #include "Document.h"
+#include <ctime>
+#ifdef Q_OS_UNIX
+#include <pwd.h>
+#include <unistd.h>
+#endif
 #ifdef PDFABLE_SIGNING
 #include "Signer.h"
 #endif
@@ -494,6 +499,7 @@ static AnnotKind kindOf(enum pdf_annot_type t)
     case PDF_ANNOT_HIGHLIGHT: return AnnotKind::Highlight;
     case PDF_ANNOT_UNDERLINE: return AnnotKind::Underline;
     case PDF_ANNOT_STRIKE_OUT: return AnnotKind::StrikeOut;
+    case PDF_ANNOT_TEXT: return AnnotKind::Note;
     default: return AnnotKind::Other;
     }
 }
@@ -633,6 +639,7 @@ QVector<AnnotInfo> Document::annots(int page)
                     ai.id = annotId(c, a);
                     ai.kind = kindOf(pdf_annot_type(c, a));
                     ai.rect = qr(pdf_bound_annot(c, a));
+                    if (ai.kind == AnnotKind::Ink) ai.text = QString::fromUtf8(pdf_annot_contents(c, a));
                     if (ai.kind == AnnotKind::FreeText) {
                         ai.text = QString::fromUtf8(pdf_annot_contents(c, a));
                         const char *font = nullptr;
@@ -640,13 +647,14 @@ QVector<AnnotInfo> Document::annots(int page)
                         float col[4] = {0, 0, 0, 0};
                         pdf_annot_default_appearance(c, a, &font, &ai.fontSize, &n, col);
                         ai.color = n == 3 ? QColor::fromRgbF(col[0], col[1], col[2]) : n == 1 ? QColor::fromRgbF(col[0], col[0], col[0]) : QColor(Qt::black);
-                    } else if (ai.kind == AnnotKind::Highlight || ai.kind == AnnotKind::Underline || ai.kind == AnnotKind::StrikeOut) {
+                    } else if (ai.kind == AnnotKind::Highlight || ai.kind == AnnotKind::Underline || ai.kind == AnnotKind::StrikeOut ||
+                               ai.kind == AnnotKind::Note) {
                         ai.text = QString::fromUtf8(pdf_annot_contents(c, a));
                         int n = 0;
                         float col[4] = {0, 0, 0, 0};
                         pdf_annot_color(c, a, &n, col);
                         ai.color = n == 3 ? QColor::fromRgbF(col[0], col[1], col[2]) : n == 1 ? QColor::fromRgbF(col[0], col[0], col[0]) : QColor(255, 235, 60);
-                        int nq = pdf_annot_quad_point_count(c, a);
+                        int nq = ai.kind == AnnotKind::Note ? 0 : pdf_annot_quad_point_count(c, a);    // MuPDF throws for a type without quads
                         for (int q = 0; q < nq; ++q) ai.quads.push_back(qquad(pdf_annot_quad_point(c, a, q)));
                     }
                     out.push_back(ai);
@@ -714,6 +722,25 @@ int Document::addMarkup(int page, AnnotKind kind, const QVector<QPolygonF> &quad
                 fq.ul = fp(q[0]); fq.ur = fp(q[1]); fq.lr = fp(q[2]); fq.ll = fp(q[3]);
                 pdf_add_annot_quad_point(c, a, fq);
             }
+            id = annotId(c, a);
+        }
+        fz_always(c) pdf_drop_annot(c, a);
+        fz_catch(c) fz_rethrow(c);
+    });
+    return id;
+}
+
+int Document::addNote(int page, QPointF at, const QColor &col)
+{
+    int id = 0;
+    pageOp(page, "Sticky note", [&](fz_context *c, pdf_page *pg) {
+        pdf_annot *a = pdf_create_annot(c, pg, PDF_ANNOT_TEXT);
+        fz_try(c)
+        {
+            float rgb[3] = {col.redF(), col.greenF(), col.blueF()};
+            pdf_set_annot_color(c, a, 3, rgb);
+            pdf_set_annot_icon_name(c, a, "Note");
+            pdf_set_annot_rect(c, a, fr(QRectF(at.x() - 8, at.y() - 8, 16, 16)));    // the size MuPDF draws the icon at
             id = annotId(c, a);
         }
         fz_always(c) pdf_drop_annot(c, a);
@@ -803,14 +830,43 @@ void Document::scaleFreeText(int page, int id, const QRectF &r, float fontSize)
     });
 }
 
+static QString s_author;
+void Document::setAuthor(const QString &name) { s_author = name.trimmed(); }
+QString Document::author() { return s_author; }
+
+QString Document::defaultAuthor()
+{
+#ifdef Q_OS_UNIX
+    if (const passwd *pw = getpwuid(getuid())) {     // the "real name" given when the account was created
+        QString full = QString::fromLocal8Bit(pw->pw_gecos).section(',', 0, 0).trimmed();
+        if (!full.isEmpty()) return full;
+    }
+#endif
+    return qEnvironmentVariable("USERNAME", qEnvironmentVariable("USER"));
+}
+
 void Document::setAnnotContents(int page, int id, const QString &text)
 {
-    pageOp(page, "Note", [&](fz_context *c, pdf_page *pg) { pdf_set_annot_contents(c, findAnnot(c, pg, id), text.toUtf8().constData()); });
+    pageOp(page, "Note", [&](fz_context *c, pdf_page *pg) {
+        pdf_annot *a = findAnnot(c, pg, id);
+        pdf_set_annot_contents(c, a, text.toUtf8().constData());
+        if (text.isEmpty())
+            pdf_dict_del(c, pdf_annot_obj(c, a), PDF_NAME(Contents));      // the note is gone: leave no empty entry
+        else {
+            // who and when, as other readers record and show it; MuPDF writes neither by itself.
+            // The author is the one who wrote the note first, a later edit only changes the date.
+            if (!s_author.isEmpty() && !pdf_dict_get(c, pdf_annot_obj(c, a), PDF_NAME(T))) pdf_set_annot_author(c, a, s_author.toUtf8().constData());
+            pdf_set_annot_modification_date(c, a, int64_t(std::time(nullptr)));
+        }
+        // MuPDF now wants to redraw the annotation its own way, also after a note was removed: a stroke
+        // would lose its variable width, and a highlighter stroke would cover the text instead of tinting it
+        if (pdf_annot_type(c, a) == PDF_ANNOT_INK) writeInk(c, doc_, pg, a, readInk(c, a));
+    });
 }
 
 // Reads the markings straight from the page dictionaries: much faster than loading every page,
 // which matters for long documents because the notes sidebar needs all of them.
-QVector<MarkupNote> Document::markups()
+QVector<MarkupNote> Document::markups(int withId)
 {
     std::lock_guard<std::recursive_mutex> lk(mu_);
     QVector<MarkupNote> out;
@@ -833,12 +889,18 @@ QVector<MarkupNote> Document::markups()
                     if (pdf_name_eq(c, st, PDF_NAME(Highlight))) m.kind = AnnotKind::Highlight;
                     else if (pdf_name_eq(c, st, PDF_NAME(Underline))) m.kind = AnnotKind::Underline;
                     else if (pdf_name_eq(c, st, PDF_NAME(StrikeOut))) m.kind = AnnotKind::StrikeOut;
+                    else if (pdf_name_eq(c, st, PDF_NAME(Text)) && !pdf_dict_get(c, ref, PDF_NAME(IRT))) m.kind = AnnotKind::Note;   // not replies
+                    else if (pdf_name_eq(c, st, PDF_NAME(Ink))) m.kind = AnnotKind::Ink;
                     else continue;
                     m.page = i;
                     m.id = pdf_to_num(c, ref);
                     if (m.id <= 0) continue;
+                    // a handwritten page has hundreds of strokes: only the few that carry a note
+                    if (m.kind == AnnotKind::Ink && m.id != withId && !pdf_dict_get(c, ref, PDF_NAME(Contents))) continue;
                     m.rect = qr(fz_transform_rect(pdf_to_rect(c, pdf_dict_get(c, ref, PDF_NAME(Rect))), ctm));
                     m.text = QString::fromUtf8(pdf_dict_get_text_string(c, ref, PDF_NAME(Contents)));
+                    m.author = QString::fromUtf8(pdf_dict_get_text_string(c, ref, PDF_NAME(T)));
+                    if (int64_t t = pdf_dict_get_date(c, ref, PDF_NAME(M)); t > 0) m.modified = QDateTime::fromSecsSinceEpoch(t);
                     pdf_obj *col = pdf_dict_get(c, ref, PDF_NAME(C));
                     int cn = pdf_array_len(c, col);
                     if (cn == 3) m.color = QColor::fromRgbF(pdf_array_get_real(c, col, 0), pdf_array_get_real(c, col, 1), pdf_array_get_real(c, col, 2));
@@ -853,13 +915,69 @@ QVector<MarkupNote> Document::markups()
                         // PDF order: upper-left, upper-right, lower-left, lower-right
                         m.quads.push_back(QPolygonF({pt(0), pt(1), pt(3), pt(2)}));
                     }
+                    // MuPDF draws the icon 16 pt wide at the top left of the rectangle, whatever its size
+                    if (m.kind == AnnotKind::Note) m.rect.setSize(QSizeF(16, 16));
                     if (m.quads.isEmpty()) m.quads.push_back(QPolygonF(m.rect));
+                    const QRectF first = m.quads.first().boundingRect();
+                    m.anchor = m.kind == AnnotKind::Note ? QPointF(first.left(), first.center().y()) : first.bottomLeft();
+                    if (m.kind == AnnotKind::Ink) {      // the box of a stroke can be far from the stroke itself
+                        pdf_obj *list = pdf_dict_get(c, ref, PDF_NAME(InkList));
+                        pdf_obj *widths = pdf_dict_gets(c, ref, "PDFableWidths");
+                        qreal width = pdf_to_real(c, pdf_dict_getl(c, ref, PDF_NAME(BS), PDF_NAME(W), nullptr));
+                        auto point = [&](pdf_obj *st, int k2) {
+                            return qp_point(fz_transform_point(fz_make_point(pdf_array_get_real(c, st, k2), pdf_array_get_real(c, st, k2 + 1)), ctm));
+                        };
+                        // the leftmost point; of those about equally far left (a vertical line) the lowest
+                        qreal minX = 1e30;
+                        for (int si = 0; si < pdf_array_len(c, list); ++si)
+                            for (int k2 = 0; k2 + 1 < pdf_array_len(c, pdf_array_get(c, list, si)); k2 += 2)
+                                minX = qMin(minX, point(pdf_array_get(c, list, si), k2).x());
+                        bool any = false;
+                        for (int si = 0; si < pdf_array_len(c, list); ++si) {
+                            pdf_obj *st = pdf_array_get(c, list, si);
+                            pdf_obj *sw = pdf_array_get(c, widths, si);
+                            for (int k2 = 0; k2 + 1 < pdf_array_len(c, st); k2 += 2) {
+                                const QPointF pt = point(st, k2);
+                                if (pt.x() > minX + 1 || (any && pt.y() <= m.anchor.y())) continue;
+                                m.anchor = pt;
+                                if (pdf_array_len(c, sw) * 2 == pdf_array_len(c, st)) width = pdf_array_get_real(c, sw, k2 / 2);
+                                any = true;
+                            }
+                        }
+                        m.anchor.rx() -= width / 2 + 1.5;        // beside the stroke, not on it
+                    }
                     out.push_back(m);
                 }
             }
         });
     } catch (const PdfError &) {}
     return out;
+}
+
+qreal Document::clearOfText(int page, QPointF pt)
+{
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    qreal y = pt.y();
+    if (!doc_ || page < 0 || page >= sizes_.size()) return y;
+    try {
+        fzrun([&](fz_context *c) {
+            auto *st = static_cast<fz_stext_page *>(stext(c, page));
+            // Only the text line the point is in or next to. On a page with two columns a line to
+            // the second column may still cross text of the first, as the lines of text markings do.
+            const fz_stext_line *best = nullptr;
+            qreal bestGap = 0;
+            for (fz_stext_block *b = st->first_block; b; b = b->next) {
+                if (b->type != FZ_STEXT_BLOCK_TEXT) continue;
+                for (fz_stext_line *l = b->u.t.first_line; l; l = l->next) {
+                    if (!(l->bbox.x0 < pt.x() && l->bbox.y0 < y && y < l->bbox.y1 - 0.5)) continue;
+                    const qreal gap = qMax(0.0, pt.x() - l->bbox.x1);
+                    if (!best || gap < bestGap) { best = l; bestGap = gap; }
+                }
+            }
+            if (best) y = best->bbox.y1;
+        });
+    } catch (const PdfError &) {}
+    return y;
 }
 
 QString Document::textInQuads(int page, const QVector<QPolygonF> &quads)

@@ -22,6 +22,7 @@
 #include <QToolButton>
 #include <QTouchEvent>
 #include <QStyle>
+#include <QStyleHints>
 #include <QTabletEvent>
 #include <QUrl>
 #include <algorithm>
@@ -31,6 +32,41 @@
 using namespace ink;
 
 static const qreal kGap = 12, kMargin = 12;
+
+static bool isMarkup(AnnotKind k) { return k == AnnotKind::Highlight || k == AnnotKind::Underline || k == AnnotKind::StrikeOut; }
+static bool hasHandles(AnnotKind k) { return k == AnnotKind::Ink || k == AnnotKind::FreeText || k == AnnotKind::Stamp; }   // can be resized
+
+// Rounds the corners of an outline made of straight edges.
+static QPainterPath roundedCorners(const QPainterPath &path, qreal r)
+{
+    QPainterPath out;
+    const QList<QPolygonF> shapes = path.simplified().toSubpathPolygons();
+    for (QPolygonF poly : shapes) {
+        if (poly.size() > 1 && poly.first() == poly.last()) poly.removeLast();
+        const int n = int(poly.size());
+        if (n < 3) continue;
+        for (int i = 0; i < n; ++i) {
+            const QLineF in(poly[i], poly[(i + n - 1) % n]), on(poly[i], poly[(i + 1) % n]);
+            if (in.length() < 1e-6 || on.length() < 1e-6) continue;
+            const qreal rr = qMin(r, qMin(in.length(), on.length()) / 2);
+            const QPointF a = in.pointAt(rr / in.length()), b = on.pointAt(rr / on.length());
+            if (out.elementCount() == 0 || out.currentPosition() == out.elementAt(0)) out.moveTo(a);
+            else out.lineTo(a);
+            out.quadTo(poly[i], b);
+        }
+        out.closeSubpath();
+    }
+    return out;
+}
+
+// The same hue, deep and saturated. Mid lightness shows on light and on dark paper alike;
+// darker() would turn yellow olive.
+QColor noteLineColor(const QColor &c)
+{
+    float h, s, l;
+    c.getHslF(&h, &s, &l);
+    return QColor::fromHslF(h, s < 0.1f ? s : qMax(s, 0.85f), 0.42f);
+}
 static double s_scrollSpeed = 0.8;
 static bool s_noteAfterMarking = true;
 void PdfView::setNoteAfterMarking(bool on) { s_noteAfterMarking = on; }
@@ -403,15 +439,17 @@ void PdfView::onPageChanged(int page)
 {
     linkCache_.clear();
     fieldCache_.clear();
-    // Undo, redo and saving may change any page: keep the selected annotation only while it is still there unchanged.
-    // Its id alone is not enough: it is an object number, and an optimised save renumbers the objects, so the old
-    // number often names another stroke on the same page, which Delete or a drag would then act on. An undo that
-    // moved or resized the annotation lets go of it, as every undo did before.
-    if (page < 0 && annPage_ >= 0) {
+    // The selected annotation may be gone (deleted from the Notes sidebar, say), or, after undo, redo or saving
+    // (any page), be another one: its id is an object number, and an optimised save renumbers the objects, so the
+    // old number often names another stroke on the same page, which Delete or a drag would then act on. Then only
+    // the same annotation unchanged keeps the selection; an undo that moved or resized it lets go of it, as every
+    // undo did before. An edit of one page keeps it while it is there: a drag of it is such an edit, and ann_ only
+    // takes the new rectangle afterwards.
+    if (annPage_ >= 0) {
         bool same = false;
         for (const AnnotInfo &a : doc_->annots(annPage_))
-            same = same || (a.id == ann_.id && a.kind == ann_.kind && a.rect == ann_.rect);
-        if (!same) annPage_ = -1;
+            same = same || (a.id == ann_.id && (page >= 0 || (a.kind == ann_.kind && a.rect == ann_.rect)));
+        if (!same) clearAnnotSelection();      // tells the Notes sidebar too, whose note would stay lit
     }
     viewport()->update();
 }
@@ -428,7 +466,7 @@ void PdfView::onStructureChanged()
     searchTotal_ = 0;
     selPage_ = -1;
     selQuads_.clear();
-    annPage_ = -1;
+    clearAnnotSelection();      // tells the Notes sidebar too, whose note would stay lit
     erasePage_ = -1;
     for (int i = pending_.size() - 1; i >= 0; --i)
         if (pending_[i].committed) pending_.removeAt(i);
@@ -572,23 +610,133 @@ void PdfView::paintEvent(QPaintEvent *e)
         p.restore();
     }
 
+    // Outline of a text marking, in view coordinates: one shape around all its lines, not a box per
+    // line. A highlight gets the shape MuPDF draws it in, with its bulging ends.
+    auto boundary = [&](int page, const QVector<QPolygonF> &quads, bool highlight) {
+        QVector<QPolygonF> qs = quads;      // each: upper left, upper right, lower right, lower left of a text line
+        std::sort(qs.begin(), qs.end(), [](const QPolygonF &a, const QPolygonF &b) { return a.boundingRect().top() < b.boundingRect().top(); });
+        QPainterPath path;
+        qreal lineHeight = 0;
+        for (int i = 0; i < qs.size(); ++i) {
+            const QPolygonF &q = qs[i];
+            if (q.size() < 4) continue;
+            // the text may run in any direction (the label of a plot's axis): along it and across it
+            const QLineF along(q[0], q[1]), across(q[3], q[0]);
+            if (along.length() < 1e-6 || across.length() < 1e-6) continue;
+            lineHeight = across.length();
+            QPainterPath one;
+            if (highlight) {
+                const qreal d = across.length() * 0.2357;       // MuPDF's control points for the ends: height * sqrt(2) / 6
+                const QPointF u = (q[1] - q[0]) / along.length() * d, v = (q[0] - q[3]) / across.length() * d;
+                one.moveTo(q[3]);
+                one.cubicTo(q[3] - u + v, q[0] - u - v, q[0]);
+                one.lineTo(q[1]);
+                one.cubicTo(q[1] + u - v, q[2] + u + v, q[2]);
+            } else
+                one.addPolygon(q);
+            one.closeSubpath();
+            path = path.united(one);
+            if (i + 1 == qs.size() || qAbs(along.dy()) > 0.01 * along.length() || along.dx() < 0) continue;
+            // level text: fill the gap to the next text line where the two are above each other, so that they join
+            const QRectF r = q.boundingRect(), n = qs[i + 1].boundingRect();
+            const qreal left = qMax(r.left(), n.left()), right = qMin(r.right(), n.right());
+            if (right > left && n.top() > r.bottom() - 0.1 && n.top() - r.bottom() < r.height()) {
+                QPainterPath gap;
+                gap.addRect(QRectF(left, r.bottom() - 0.1, right - left, n.top() - r.bottom() + 0.2));
+                path = path.united(gap);
+            }
+        }
+        path = QTransform::fromTranslate(pageViewRect(page).x(), pageViewRect(page).y()).scale(s, s).map(path);
+        return highlight ? path : roundedCorners(path, lineHeight * s * 0.2);
+    };
+    // A highlight gets an outline. An underline or strike-out has lines of its own, which an outline
+    // would turn into a stack of boxes: its text gets a light tint instead.
+    auto lightMarkup = [&](int page, AnnotKind kind, const QVector<QPolygonF> &quads, QColor c) {
+        if (kind == AnnotKind::Highlight) {
+            p.setPen(QPen(c, 1.2));
+            p.setBrush(Qt::NoBrush);
+        } else {
+            c.setAlpha(45);
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+        }
+        p.drawPath(boundary(page, quads, kind == AnnotKind::Highlight));
+    };
+    // A stroke is lit by a glow along it; a box around it can be far from the stroke. A highlighter
+    // stroke gets an outline instead: a glow would darken the whole translucent band.
+    auto glow = [&](int page, int id) {
+        for (const InkAnnot &ia : inksFor(page)) {
+            if (ia.id != id) continue;
+            QColor c = noteLineColor(ia.data.color);
+            p.setBrush(Qt::NoBrush);
+            for (const InkStroke &st : ia.data.strokes) {
+                qreal w = ia.data.width;
+                for (float v : st.w) w = qMax(w, qreal(v));
+                QPolygonF line;
+                for (const QPointF &pt : st.pts) line.push_back(pageToView(page, pt));
+                if (line.size() == 1) line.push_back(line.first() + QPointF(0.01, 0));
+                if (ia.data.highlighter) {
+                    QPainterPath track;
+                    track.addPolygon(line);
+                    QPainterPathStroker around;
+                    around.setWidth(w * s + 2);
+                    around.setCapStyle(Qt::RoundCap);
+                    around.setJoinStyle(Qt::RoundJoin);
+                    QPainterPath outline = around.createStroke(track);
+                    outline.setFillRule(Qt::WindingFill);
+                    p.setPen(QPen(c, 1.2));
+                    p.drawPath(outline.simplified());
+                } else {
+                    c.setAlpha(110);
+                    p.setPen(QPen(c, w * s + 6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                    p.drawPolyline(line);
+                }
+            }
+        }
+    };
+    auto ring = [&](int page, const QRectF &r) {      // around a sticky note's icon: a little outside it
+        QPainterPath path;
+        path.addRoundedRect(toView(page, r).adjusted(-3, -3, 3, 3), 4, 4);
+        return path;
+    };
     if (noteLinksVisible_ && !noteLinks_.isEmpty()) {      // fine lines from markings to their notes
         p.save();
         p.setRenderHint(QPainter::Antialiasing);
         for (const NoteLink &l : std::as_const(noteLinks_)) {
             if (l.page < 0 || l.page >= pageRects_.size()) continue;
             QPointF a = pageToView(l.page, l.anchor);
-            if (a.y() < ev.top() - 2 || a.y() > ev.bottom() + 2) continue;
-            QColor c = l.color.darker(135);
-            p.setPen(QPen(c, 1.2));
-            p.drawLine(QPointF(0, a.y()), QPointF(a.x() - 1, a.y()));
-            p.setBrush(c);
+            const qreal y = pageToView(l.page, QPointF(0, l.lineY)).y();
+            if (!l.lit && (qMax(a.y(), y) < ev.top() - 2 || qMin(a.y(), y) > ev.bottom() + 2)) continue;
+            if (l.lit && isMarkup(l.kind))
+                lightMarkup(l.page, l.kind, l.quads, l.color);
+            else if (l.lit && l.kind == AnnotKind::Note) {
+                p.setPen(QPen(l.color, 1.2));
+                p.setBrush(Qt::NoBrush);
+                p.drawPath(ring(l.page, l.quads.value(0).boundingRect()));
+            } else if (l.lit && !(annPage_ == l.page && ann_.id == l.id))      // a selected stroke shows its frame instead
+                glow(l.page, l.id);
+            // the line: along the bottom of the text line it would strike through, then up or down to the anchor
+            p.setPen(QPen(l.color, 1.2));
+            const QPointF bend(a.x() - 1 - qMin(qAbs(a.y() - y), a.x()), y);
+            p.drawLine(QPointF(0, y), bend);
+            p.drawLine(bend, QPointF(a.x() - 1, a.y()));
+            p.setBrush(l.color);
             p.setPen(Qt::NoPen);
             p.drawEllipse(a, 2.5, 2.5);
         }
         p.restore();
     }
-    if (annPage_ >= 0 && annPage_ < pageRects_.size()) {
+    if (annPage_ >= 0 && annPage_ < pageRects_.size() && (isMarkup(ann_.kind) || ann_.kind == AnnotKind::Note)) {
+        // no handles to drag: a boundary in the colour of the marking, a ring around a sticky note
+        p.setRenderHint(QPainter::Antialiasing);
+        if (isMarkup(ann_.kind))
+            lightMarkup(annPage_, ann_.kind, ann_.quads, noteLineColor(ann_.color));
+        else {
+            p.setPen(QPen(noteLineColor(ann_.color), 1.2));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(ring(annPage_, drag_ == Drag::AnnotMove ? annDragRect_ : ann_.rect));
+        }
+    } else if (annPage_ >= 0 && annPage_ < pageRects_.size()) {
         QRectF vr = toView(annPage_, (drag_ == Drag::AnnotMove || drag_ == Drag::AnnotResize) ? annDragRect_ : ann_.rect);
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setBrush(Qt::NoBrush);
@@ -596,7 +744,7 @@ void PdfView::paintEvent(QPaintEvent *e)
         p.drawRect(vr);
         p.setPen(QPen(QColor(0, 120, 215), 1));
         p.setBrush(Qt::white);
-        for (int c = 0; c < 4; ++c) p.drawRect(handleRect(c, vr).adjusted(2, 2, -2, -2));
+        for (int c = 0; c < 4 && hasHandles(ann_.kind); ++c) p.drawRect(handleRect(c, vr).adjusted(2, 2, -2, -2));
         if (drag_ == Drag::AnnotResize && ann_.kind == AnnotKind::FreeText) {      // live preview of the new text size
             qreal k = annDragRect_.width() / qMax(1.0, ann_.rect.width());
             QFont f("Helvetica");
@@ -775,11 +923,15 @@ void PdfView::mouseReleaseEvent(QMouseEvent *e)
 void PdfView::mouseDoubleClickEvent(QMouseEvent *e)
 {
     int pg = pageAt(e->position());
+    if (tool_ != Tool::Select || pg < 0) return;
+    QPointF pt = toPage(pg, e->position());
     AnnotInfo a;
-    if (tool_ == Tool::Select && pg >= 0 && annotAt(pg, toPage(pg, e->position()), &a) && a.kind == AnnotKind::FreeText) {
+    bool hit = annotAt(pg, pt, &a);
+    if (hit && a.kind == AnnotKind::FreeText) {
         clearAnnotSelection();
-        beginTextEdit(pg, toPage(pg, e->position()), &a);
-    }
+        beginTextEdit(pg, pt, &a);
+    } else if (int id = isPreview_ ? 0 : hit && (a.kind == AnnotKind::Note || a.kind == AnnotKind::Ink) ? a.id : markupAt(pg, pt))
+        emit noteRequested(pg, id);
 }
 
 void PdfView::wheelEvent(QWheelEvent *e)
@@ -802,6 +954,7 @@ void PdfView::leaveEvent(QEvent *e)
     previewTimer_.stop();
     hasHoverLink_ = false;      // an open preview stays while the pointer moves into it (pollPreview)
     if (preview_) preview_->hide();
+    if (hoverNote_) emit noteHovered(hoverNote_ = 0);
     QAbstractScrollArea::leaveEvent(e);
 }
 
@@ -855,12 +1008,15 @@ void PdfView::contextMenuEvent(QContextMenuEvent *e)
         for (int i = as.size() - 1; i >= 0; --i)
             if (as[i].rect.contains(pt)) {
                 int id = as[i].id;
+                if (!isPreview_ && (isMarkup(as[i].kind) || as[i].kind == AnnotKind::Note || as[i].kind == AnnotKind::Ink))
+                    m.addAction(as[i].text.isEmpty() ? tr("Add note") : tr("Edit note"), this, [this, pg, id] { emit noteRequested(pg, id); });
                 m.addAction(tr("Delete annotation"), this, [this, pg, id] {
                     clearAnnotSelection();
                     try { doc_->removeAnnots(pg, {id}); } catch (const PdfError &err) { emit statusMessage(err.message()); }
                 });
                 break;
             }
+        if (!isPreview_) m.addAction(tr("Add note here"), this, [this, pg, pt] { addNote(pg, pt); });
     }
     if (!m.isEmpty()) m.exec(e->globalPos());
 }
@@ -972,6 +1128,7 @@ void PdfView::press(const Ptr &e)
         drag_ = Drag::Erase;
         eraseAt(pg, pt);
         break;
+    case Tool::Note: addNote(pg, pt); break;
     case Tool::Text: {
         AnnotInfo a;
         bool existing = annotAt(pg, pt, &a) && a.kind == AnnotKind::FreeText;
@@ -979,7 +1136,7 @@ void PdfView::press(const Ptr &e)
         break;
     }
     case Tool::Select: {
-        if (annPage_ >= 0) {
+        if (annPage_ >= 0 && hasHandles(ann_.kind)) {
             QRectF vr = toView(annPage_, ann_.rect);
             for (int c = 0; c < 4; ++c)
                 if (handleRect(c, vr).contains(e.pos)) {
@@ -1009,14 +1166,8 @@ void PdfView::press(const Ptr &e)
         selPage_ = pg;
         selA_ = selB_ = pt;
         selQuads_.clear();
-        pressMarkupPage_ = -1;
-        pressMarkupId_ = 0;
-        for (const AnnotInfo &a : doc_->annots(pg))
-            for (const QPolygonF &q : a.quads)
-                if (q.containsPoint(pt, Qt::OddEvenFill)) {
-                    pressMarkupPage_ = pg;
-                    pressMarkupId_ = a.id;
-                }
+        pressMarkupPage_ = pg;
+        pressMarkupId_ = markupAt(pg, pt);
         viewport()->update();
         break;
     }
@@ -1103,12 +1254,17 @@ void PdfView::release(const Ptr &e)
     case Drag::TextSel:
         if (selQuads_.isEmpty()) {
             selPage_ = -1;
-            if (pressMarkupId_ && QLineF(pressPos_, e.pos).length() < 5 && !isPreview_) emit noteRequested(pressMarkupPage_, pressMarkupId_);
+            if (pressMarkupId_ && QLineF(pressPos_, e.pos).length() < 5 && !isPreview_) clickMarkup(pressMarkupPage_, pressMarkupId_, e);
         } else
             showSelBar(e.pos);
         pressMarkupId_ = 0;
         break;
-    case Drag::AnnotMove: applyAnnotDrag(false); break;
+    case Drag::AnnotMove:
+        if ((ann_.kind == AnnotKind::Note || ann_.kind == AnnotKind::Ink) && annDragRect_ == ann_.rect) {   // a tap, not a drag
+            if (secondTap(ann_.id, e) && !isPreview_) emit noteRequested(annPage_, ann_.id);
+        } else
+            applyAnnotDrag(false);
+        break;
     case Drag::AnnotResize: applyAnnotDrag(true); break;
     case Drag::RectPick: {
         auto cb = rectCb_;
@@ -1149,11 +1305,22 @@ void PdfView::hover(QPointF pos, bool pen)
         return;
     }
     int pg = pageAt(pos);
+    int note = 0;       // a marking under the pointer lights up its note in the Notes sidebar
+    if (pg >= 0 && noteLinksVisible_)
+        for (const NoteLink &nl : std::as_const(noteLinks_))
+            for (const QPolygonF &q : nl.quads) {
+                if (nl.page != pg || !q.containsPoint(toPage(pg, pos), Qt::OddEvenFill)) continue;
+                bool on = nl.kind != AnnotKind::Ink;     // a stroke: where a click would select it, not its whole box
+                for (const InkAnnot &ia : on ? QVector<InkAnnot>() : inksFor(pg))
+                    if (ia.id == nl.id) on = inkHit(ia.data, toPage(pg, pos), 5 / ppp());
+                if (on) note = nl.id;
+            }
+    if (note != hoverNote_) emit noteHovered(hoverNote_ = note);
     Qt::CursorShape cur = pg >= 0 ? Qt::IBeamCursor : Qt::ArrowCursor;
     const LinkInfo *l = pg >= 0 ? linkAt(pg, toPage(pg, pos)) : nullptr;
-    if (annPage_ >= 0) {
+    if (annPage_ >= 0 && !isMarkup(ann_.kind)) {
         QRectF vr = toView(annPage_, ann_.rect);
-        for (int c = 0; c < 4; ++c)
+        for (int c = 0; c < 4 && hasHandles(ann_.kind); ++c)
             if (handleRect(c, vr).contains(pos)) cur = (c % 2 == 0) ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor;
         if (cur == Qt::IBeamCursor && vr.contains(pos)) cur = Qt::SizeAllCursor;
     }
@@ -1281,12 +1448,8 @@ void PdfView::onHold()
 
 void PdfView::eraseAt(int page, QPointF pt)
 {
-    if (erasePage_ != page || eraseGen_ != doc_->generation()) {
-        flushInk();
-        eraseCache_ = doc_->inkAnnots(page);
-        erasePage_ = page;
-        eraseGen_ = doc_->generation();
-    }
+    flushInk();     // strokes not yet committed are not in the cache
+    inksFor(page);
     QVector<int> ids;
     qreal radius = 6 / ppp();
     for (const InkAnnot &a : std::as_const(eraseCache_))
@@ -1298,6 +1461,16 @@ void PdfView::eraseAt(int page, QPointF pt)
     for (int i = pending_.size() - 1; i >= 0; --i)
         if (pending_[i].page == page && inkHit(pending_[i].d, pt, radius)) pending_.removeAt(i);
     rebuildOverlay();
+}
+
+const QVector<InkAnnot> &PdfView::inksFor(int page)
+{
+    if (erasePage_ != page || eraseGen_ != doc_->generation()) {
+        eraseCache_ = doc_->inkAnnots(page);
+        erasePage_ = page;
+        eraseGen_ = doc_->generation();
+    }
+    return eraseCache_;
 }
 
 // ------------------------------------------------------------------ links
@@ -1401,7 +1574,7 @@ bool PdfView::annotAt(int page, QPointF pt, AnnotInfo *out)
             for (const InkAnnot &ia : std::as_const(inks))
                 if (ia.id == a.id) hit = inkHit(ia.data, pt, 5 / ppp());
             if (!hit) continue;
-        } else if (a.kind != AnnotKind::FreeText && a.kind != AnnotKind::Stamp)
+        } else if (a.kind != AnnotKind::FreeText && a.kind != AnnotKind::Stamp && a.kind != AnnotKind::Note)
             continue;
         *out = a;
         return true;
@@ -1409,10 +1582,52 @@ bool PdfView::annotAt(int page, QPointF pt, AnnotInfo *out)
     return false;
 }
 
+int PdfView::markupAt(int page, QPointF pt)
+{
+    int id = 0;
+    for (const AnnotInfo &a : doc_->annots(page))
+        for (const QPolygonF &q : a.quads)
+            if (q.containsPoint(pt, Qt::OddEvenFill)) id = a.id;
+    return id;
+}
+
+// The mouse's double-click arrives as an event of its own; the pen's is two taps on the same
+// annotation in quick succession.
+bool PdfView::secondTap(int id, const Ptr &e)
+{
+    const bool again = e.pen && id == tapId_ && e.t - tapT_ < QGuiApplication::styleHints()->mouseDoubleClickInterval();
+    tapId_ = again ? 0 : id;
+    tapT_ = e.t;
+    return again;
+}
+
+// A click selects a text marking; a double-click opens its note.
+void PdfView::clickMarkup(int page, int id, const Ptr &e)
+{
+    for (const AnnotInfo &a : doc_->annots(page))
+        if (a.id == id) selectAnnot(page, a);
+    if (secondTap(id, e)) emit noteRequested(page, id);
+}
+
+// A sticky note: its icon goes on the page, its text is written in the Notes sidebar.
+void PdfView::addNote(int page, QPointF pt)
+{
+    try {
+        flushInk();
+        int id = doc_->addNote(page, pt, QColor(255, 235, 60));
+        emit toolChangeRequested(Tool::Select);
+        for (const AnnotInfo &a : doc_->annots(page))
+            if (a.id == id) selectAnnot(page, a);
+        emit notePlaced(id);
+        emit noteRequested(page, id);
+    } catch (const PdfError &err) { emit statusMessage(err.message()); }
+}
+
 void PdfView::selectAnnot(int page, const AnnotInfo &a)
 {
     annPage_ = page;
     ann_ = a;
+    emit noteSelected(a.id);
     viewport()->update();
 }
 
@@ -1420,6 +1635,7 @@ void PdfView::clearAnnotSelection()
 {
     if (annPage_ < 0) return;
     annPage_ = -1;
+    emit noteSelected(0);
     viewport()->update();
 }
 
@@ -1455,6 +1671,16 @@ void PdfView::deleteSelectedAnnot()
     int pg = annPage_, id = ann_.id;
     clearAnnotSelection();
     try { doc_->removeAnnots(pg, {id}); } catch (const PdfError &err) { emit statusMessage(err.message()); }
+}
+
+void PdfView::selectAnnot(int page, int id)
+{
+    for (const AnnotInfo &a : doc_->annots(page))
+        if (a.id == id) {
+            selectAnnot(page, a);
+            return;
+        }
+    clearAnnotSelection();
 }
 
 // In-place text box: typing happens on the page itself; the box grows with the text.

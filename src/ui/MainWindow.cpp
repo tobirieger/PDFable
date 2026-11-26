@@ -22,6 +22,7 @@
 #include <QImageReader>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
@@ -319,6 +320,7 @@ void MainWindow::buildActions()
     tool(Tool::Highlighter, tr("High&lighter"), "M");
     tool(Tool::Eraser, tr("&Eraser"), "E");
     tool(Tool::Text, tr("&Text box"), "T");
+    tool(Tool::Note, tr("Sticky &note"), "N");
     toolActions_[int(Tool::Select)]->setChecked(true);
 
     QMenu *pages = menuBar()->addMenu(tr("&Pages"));
@@ -378,9 +380,10 @@ void MainWindow::buildActions()
     tb->addAction(backAct_);
     tb->addAction(fwdAct_);
     tb->addSeparator();
-    const char *toolIcons[6] = {"select", "hand", "pen", "marker", "eraser", "text"};
-    const QStringList toolTips{tr("Select text and objects"), tr("Pan"), tr("Pen"), tr("Highlighter"), tr("Eraser"), tr("Text box")};
-    for (int i = 0; i < 6; ++i) {
+    const char *toolIcons[7] = {"select", "hand", "pen", "marker", "eraser", "text", "note"};
+    const QStringList toolTips{tr("Select text and objects"), tr("Pan"), tr("Pen"), tr("Highlighter"), tr("Eraser"), tr("Text box"),
+                               tr("Sticky note: click on the page, write in the Notes sidebar")};
+    for (int i = 0; i < 7; ++i) {
         deco(toolActions_[i], toolIcons[i], toolTips[i]);
         tb->addAction(toolActions_[i]);
     }
@@ -583,14 +586,22 @@ void MainWindow::showPreferences()
     connect(ui, &QComboBox::currentIndexChanged, this, [](int i) { MainWindow::setInterfaceMode(Theme::Mode(i)); });
     form->addRow(tr("Interface (Ctrl+Alt+D)"), ui);
     auto *noteMode = new QComboBox;
-    noteMode->addItems({tr("Right after marking (colour bar or Ctrl+H)"), tr("Only when I click the marking")});
+    noteMode->addItems({tr("Right after marking (colour bar or Ctrl+H)"), tr("Only when I double-click the marking")});
     noteMode->setCurrentIndex(PdfView::noteAfterMarking() ? 0 : 1);
-    noteMode->setToolTip(tr("Clicking a marking always opens its note."));
+    noteMode->setToolTip(tr("Double-clicking a marking always opens its note."));
     connect(noteMode, &QComboBox::currentIndexChanged, this, [](int i) {
         PdfView::setNoteAfterMarking(i == 0);
         QSettings().setValue("notes/afterMarking", i == 0);
     });
     form->addRow(tr("Open the note editor"), noteMode);
+    auto *author = new QLineEdit(Document::author());
+    author->setPlaceholderText(tr("No name"));
+    author->setToolTip(tr("Stored in the PDF with every note you write, and shown on the note, as other PDF readers do."));
+    connect(author, &QLineEdit::textChanged, this, [](const QString &name) {
+        Document::setAuthor(name);
+        QSettings().setValue("notes/author", Document::author());
+    });
+    form->addRow(tr("Your name on notes"), author);
     auto *note = new QLabel(tr("Pen, mouse and finger: the pen and the mouse each keep their own tool. Tap a toolbar "
                                "button with the pen to set the pen's tool, click it with the mouse to set the mouse's "
                                "tool. A finger always pans and zooms."));

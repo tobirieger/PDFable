@@ -9,6 +9,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFrame>
+#include <QMouseEvent>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -37,6 +38,7 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     Theme::apply(app);
     PdfView::setNoteAfterMarking(false);
+    Document::setAuthor("Erika Mustermann");
     QSettings().setValue("pen/index", 2);          // red pen, as picked from the toolbar
 
     QTemporaryDir tmp;
@@ -74,6 +76,9 @@ int main(int argc, char **argv)
     mark({118, 434}, {357, 434}, QColor(130, 200, 255),
          "Try this for the thesis template.");
 
+    // a sticky note in the margin
+    d->setAnnotContents(0, d->addNote(0, QPointF(536, 232), QColor(255, 235, 60)), "Cite the benchmark here.");
+
     // a hand-drawn red loop around the equation
     w->setTool(Tool::Pen);
     const QPointF c(296, 331);
@@ -93,6 +98,12 @@ int main(int argc, char **argv)
     if (auto *bar = v->viewport()->findChild<QFrame *>("selBar")) bar->hide();
     w->statusBar()->clearMessage();
     wait(800);
+    {       // the pointer on the first highlight: its note shows the colour of the marking
+        QPointF on = v->pageToView(0, QPointF(440, 144));
+        QMouseEvent mv(QEvent::MouseMove, on, v->viewport()->mapToGlobal(on), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(v->viewport(), &mv);
+        wait(200);
+    }
     bool ok = w->grab().save(QString::fromLocal8Bit(argv[2]));
     std::printf("%s %s\n", ok ? "wrote" : "FAILED", argv[2]);
 

@@ -59,27 +59,32 @@ struct InkData {
     void transform(const QTransform &t, qreal widthScale);
 };
 
-enum class AnnotKind { Ink, FreeText, Stamp, Highlight, Underline, StrikeOut, Other };
+enum class AnnotKind { Ink, FreeText, Stamp, Highlight, Underline, StrikeOut, Note, Other };
 
 struct AnnotInfo {
     int id = 0;
     AnnotKind kind = AnnotKind::Other;
     QRectF rect;
-    QString text;        // FreeText: its text; markups: the attached note
+    QString text;        // FreeText: its text; markups, sticky notes and ink: the note
     float fontSize = 0;  // FreeText only
-    QColor color;        // FreeText: text colour; markups: highlight colour
+    QColor color;        // FreeText: text colour; markups: highlight colour; sticky notes: icon colour
     QVector<QPolygonF> quads;   // markups (highlight, underline, strike-out)
 };
 
-// A text marking (highlight, underline, strike-out) and the note attached to it.
+// A text marking (highlight, underline, strike-out) or a pen stroke and the note attached to it,
+// or a sticky note (an icon anywhere on the page, standing for its note).
 struct MarkupNote {
     int page = 0;
     int id = 0;
     AnnotKind kind = AnnotKind::Highlight;
     QRectF rect;
     QVector<QPolygonF> quads;
+    QPointF anchor;      // where the line from its note ends: at the bottom left of the first marked text line,
+                         // at the left of a sticky note, just left of the leftmost point of a stroke
     QColor color;
     QString text;
+    QString author;      // who wrote the note (PDF /T), empty if not recorded
+    QDateTime modified;  // when it was last changed (PDF /M), invalid if not recorded
 };
 
 // Interactive form field (AcroForm widget).
@@ -166,8 +171,12 @@ public:
     QString selectionText(int page, QPointF a, QPointF b);
     QVector<QPolygonF> search(int page, const QString &needle);
     QVector<AnnotInfo> annots(int page);
-    QVector<MarkupNote> markups();                       // whole document, quick (no page loading)
+    // Whole document, quick (no page loading). Of the pen strokes only those with a note, and withId.
+    QVector<MarkupNote> markups(int withId = 0);
     QString textInQuads(int page, const QVector<QPolygonF> &quads);
+    // The height at which a line from the left to a point does not strike through the text there:
+    // the bottom of the text line the point is in or next to, or the point's own height.
+    qreal clearOfText(int page, QPointF pt);
     QVector<FieldInfo> fields(int page);
     QVector<InkAnnot> inkAnnots(int page);
 
@@ -175,13 +184,18 @@ public:
     int addInk(int page, const InkData &d);
     void setInk(int page, int id, const InkData &d);
     int addMarkup(int page, AnnotKind kind, const QVector<QPolygonF> &quads, const QColor &c);
+    int addNote(int page, QPointF at, const QColor &c);          // sticky note icon centred on a point
     int addFreeText(int page, const QRectF &r, const QString &text, float size, const QColor &c);
     void setFreeText(int page, int id, const QString &text, const QRectF &rect = QRectF());
     int addStamp(int page, const QRectF &r, const QImage &img);
     void setAnnotRect(int page, int id, const QRectF &r);
     void scaleFreeText(int page, int id, const QRectF &r, float fontSize);   // keeps font and colour
     void removeAnnots(int page, const QVector<int> &ids);
-    void setAnnotContents(int page, int id, const QString &text);
+    void setAnnotContents(int page, int id, const QString &text);    // the note; records the author and the time
+    // The name recorded as the author of the notes written from now on (empty: none).
+    static void setAuthor(const QString &name);
+    static QString author();
+    static QString defaultAuthor();      // the account's full name, else its login name
 
     // Form filling
     void setFieldText(int page, int id, const QString &text);

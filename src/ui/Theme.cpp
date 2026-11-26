@@ -184,6 +184,11 @@ static void drawIcon(QPainter &p, const QString &n, const QColor &c)
         poly({{4.5, 6.5}, {4.5, 4.5}, {15.5, 4.5}, {15.5, 6.5}});
         p.drawLine(QPointF(10, 4.5), QPointF(10, 16));
         p.drawLine(QPointF(7.8, 16), QPointF(12.2, 16));
+    } else if (n == "note") {
+        poly({{3.5, 3.5}, {16.5, 3.5}, {16.5, 11.5}, {11.5, 16.5}, {3.5, 16.5}}, true);     // sheet with a folded corner
+        poly({{16.5, 11.5}, {11.5, 11.5}, {11.5, 16.5}});
+        p.drawLine(QPointF(6.5, 7.5), QPointF(13.5, 7.5));
+        p.drawLine(QPointF(6.5, 10.5), QPointF(9.5, 10.5));
     } else if (n == "sign") {
         path.moveTo(2.5, 12.5);
         path.cubicTo(5, 2, 8, 2.5, 6.5, 9);

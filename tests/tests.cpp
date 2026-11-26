@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTabWidget>
+#include <QTabletEvent>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTimer>
@@ -831,6 +832,7 @@ int main(int argc, char **argv)
         nv->gotoPage(1, 100, false);
         wait(200);
         PdfView::setNoteAfterMarking(true);
+        Document::setAuthor("Test Author");
         QPointF a = nv->pageToView(1, QPointF(75, 255)), b = nv->pageToView(1, QPointF(330, 262));
         nv->testPointer(0, a, -1, 30000);
         nv->testPointer(1, b, -1, 30010);
@@ -853,6 +855,34 @@ int main(int argc, char **argv)
         QString stored;
         for (const MarkupNote &m : nd->markups()) if (m.id == id) stored = m.text;
         CHECK(stored.startsWith("Check this functional"));
+        // the note records who wrote it and when, and its card shows both
+        auto noteMeta = [&](int which) {
+            for (const MarkupNote &m : nd->markups()) if (m.id == which) return m;
+            return MarkupNote();
+        };
+        CHECK(noteMeta(id).author == "Test Author" && std::llabs(noteMeta(id).modified.secsTo(QDateTime::currentDateTime())) < 120);
+        bool named = false;
+        for (QLabel *l : card->findChildren<QLabel *>()) named = named || (l->isVisible() && l->text().startsWith("Test Author · "));
+        CHECK(named);
+        Document::setAuthor("Someone Else");              // a later edit by somebody else keeps the author
+        nd->setAnnotContents(1, id, stored);
+        CHECK(noteMeta(id).author == "Test Author");
+        Document::setAuthor("Test Author");
+        wait(300);
+        // a card looks the same while it is edited; a long note scrolls instead of growing on
+        if (card && ed) {
+            int shown = card->height();
+            card->startEditing();
+            wait(50);
+            CHECK(card->isEditing() && card->height() == shown);
+            ed->setPlainText(QString("A long note that goes on. ").repeated(60));
+            wait(50);
+            CHECK(ed->verticalScrollBar()->maximum() > 0 && card->height() < 320);
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(ed, &esc);
+            wait(100);
+            CHECK(!card->isEditing() && card->height() == shown && ed->verticalScrollBar()->maximum() == 0);
+        }
         // a second note further down, written by clicking an existing marking
         PdfView::setNoteAfterMarking(false);
         a = nv->pageToView(1, QPointF(75, 418)); b = nv->pageToView(1, QPointF(300, 424));
@@ -865,6 +895,10 @@ int main(int argc, char **argv)
         QPointF c = nv->pageToView(1, QPointF(150, 421));
         nv->testPointer(0, c, -1, 32000);
         nv->testPointer(2, c, -1, 32010);
+        wait(50);
+        CHECK(!np->card(id2));                            // a click only selects the marking
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, c, nv->viewport()->mapToGlobal(c), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(nv->viewport(), &dbl);
         wait(50);
         CHECK(np->card(id2) && np->card(id2)->isEditing());
         if (np->card(id2)) {
@@ -884,8 +918,325 @@ int main(int argc, char **argv)
             std::printf("     card1 y=%d anchor y=%d, card2 y=%d\n", c1->y(), anchor1.y(), c2->y());
             CHECK(std::abs(c1->y() + 14 - anchor1.y()) < 4 && c2->y() > c1->y() + c1->height());
         }
+        // a selected marking lights its note up, and so does the pointer on a marking or on a card
+        if (c1 && c2) {
+            CHECK(!c1->isLit() && c2->isLit());           // the second marking is still selected
+            QPointF off = nv->pageToView(1, QPointF(40, 330));
+            nv->testPointer(0, off, -1, 32500);
+            nv->testPointer(2, off, -1, 32510);
+            CHECK(!c1->isLit() && !c2->isLit());
+            QPointF on = nv->pageToView(1, QPointF(150, 421));
+            QMouseEvent mv(QEvent::MouseMove, on, nv->viewport()->mapToGlobal(on), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(nv->viewport(), &mv);
+            CHECK(!c1->isLit() && c2->isLit());
+            QEvent leave(QEvent::Leave);
+            QApplication::sendEvent(nv, &leave);
+            CHECK(!c2->isLit());
+            // the pen (holding the select tool): one tap selects the marking, a second tap opens the editor
+            QPointF m1 = nv->pageToView(1, QPointF(150, 258));
+            QTabletEvent near(QEvent::TabletMove, QPointingDevice::primaryPointingDevice(), m1, nv->viewport()->mapToGlobal(m1),
+                              0, 0, 0, 0, 0, 0, Qt::NoModifier, Qt::NoButton, Qt::NoButton);
+            QApplication::sendEvent(nv->viewport(), &near);
+            w->setTool(Tool::Select);
+            nv->testPointer(0, m1, 0.5f, 33000, true);
+            nv->testPointer(2, m1, 0, 33010, true);
+            CHECK(c1->isLit() && !c1->isEditing());
+            nv->testPointer(0, m1, 0.5f, 33200, true);
+            nv->testPointer(2, m1, 0, 33210, true);
+            wait(50);
+            CHECK(c1->isEditing());
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(c1->findChild<QPlainTextEdit *>(), &esc);
+            wait(100);
+            // Del removes the selected marking, and its note with it
+            CHECK(c1->isLit() && !c1->isEditing());
+            QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+            QApplication::sendEvent(nv, &del);
+            wait(400);
+            CHECK(!np->card(id) && np->noteCount() == 1);
+            nt->undo();
+            wait(400);
+            CHECK(np->noteCount() == 2);
+            nv->testPointer(0, off, -1, 34000);           // back to the mouse
+            nv->testPointer(2, off, -1, 34010);
+            // writing another note moves the selection to its marking
+            QApplication::sendEvent(nv, &leave);          // the pen hovered over the first marking
+            // undo and redo keep the selection in the view while the marking is still there unchanged, and the
+            // sidebar follows the view either way
+            nv->testPointer(0, on, -1, 34500);
+            nv->testPointer(2, on, -1, 34510);
+            CHECK(np->card(id2) && np->card(id2)->isLit());
+            nd->undo();
+            nd->redo();
+            wait(400);
+            CHECK(np->card(id2) && np->card(id2)->isLit());
+            nv->selectAnnot(1, 0);                        // the view lets go: so does the sidebar
+            wait(50);
+            CHECK(np->card(id2) && !np->card(id2)->isLit());
+            nv->testPointer(0, on, -1, 35000);
+            nv->testPointer(2, on, -1, 35010);
+            NoteCard *n1 = np->card(id), *n2 = np->card(id2);
+            CHECK(n1 && n2 && n2->isLit() && !n1->isLit());
+            if (n1 && n2) {
+                QPointF in(n1->width() / 2.0, 6);
+                QMouseEvent click(QEvent::MouseButtonPress, in, n1->mapToGlobal(in), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(n1, &click);
+                wait(50);
+                CHECK(n1->isEditing() && !n2->isLit());
+                QApplication::sendEvent(n1->findChild<QPlainTextEdit *>(), &esc);
+                wait(100);
+                CHECK(n1->isLit() && !n1->isEditing() && !n2->isLit());
+            }
+        }
         nt->window()->grab().save(out + "/9c_notes.png");
+        // notes outside the part of the document in view: a hint says how many, a click goes to the nearest
+        {
+            auto hint = [&](const QString &arrow) -> QToolButton * {
+                for (QToolButton *b : np->findChildren<QToolButton *>())
+                    if (b->isVisible() && b->text().startsWith(arrow)) return b;
+                return nullptr;
+            };
+            CHECK(!hint("↑") && !hint("↓"));
+            nv->gotoPage(4, 0, false);
+            wait(200);
+            QToolButton *up = hint("↑");
+            CHECK(up && up->text() == "↑ 2 notes above" && !hint("↓"));
+            if (up) up->click();
+            wait(200);
+            CHECK(nv->currentPage() == 1 && np->card(id2) && np->card(id2)->isVisible() && hint("↑") && hint("↑")->text() == "↑ 1 note above");
+            CHECK(np->card(id2)->isLit() && !np->card(id)->isLit());       // the note it went to is the selected one
+            nv->gotoPage(0, 0, false);
+            wait(200);
+            CHECK(hint("↓") && hint("↓")->text() == "↓ 2 notes below");
+            nt->window()->grab().save(out + "/9h_hint.png");
+            nv->gotoPage(1, 100, false);
+            wait(200);
+        }
         PdfView::setNoteAfterMarking(true);
+    }
+
+    // sticky notes: the tool puts an icon on the page and opens its note in the Notes sidebar
+    {
+        DocumentTab *nt = w->currentTab();
+        PdfView *nv = nt->view();
+        Document *nd = nt->doc();
+        NotesPanel *np = nt->notesPanel();
+        const int before = np->noteCount();
+        auto stickies = [&] {
+            QVector<AnnotInfo> v;
+            for (const AnnotInfo &a : nd->annots(1)) if (a.kind == AnnotKind::Note) v.push_back(a);
+            return v;
+        };
+        auto key = [&](QWidget *to, int k, Qt::KeyboardModifiers m = Qt::NoModifier) {
+            QKeyEvent e(QEvent::KeyPress, k, m);
+            QApplication::sendEvent(to, &e);
+        };
+        QPointF at = nv->pageToView(1, QPointF(420, 330));
+        w->setTool(Tool::Note);
+        nv->testPointer(0, at, -1, 40000);
+        nv->testPointer(2, at, -1, 40010);
+        wait(50);
+        CHECK(stickies().size() == 1 && nv->tool() == Tool::Select);
+        int sid = stickies().value(0).id;
+        CHECK(np->card(sid) && np->card(sid)->isEditing());
+        if (np->card(sid)) key(np->card(sid)->findChild<QPlainTextEdit *>(), Qt::Key_Escape);
+        wait(300);
+        CHECK(stickies().isEmpty() && !np->card(sid));     // placed but not written: gone again
+        w->setTool(Tool::Note);
+        nv->testPointer(0, at, -1, 41000);
+        nv->testPointer(2, at, -1, 41010);
+        wait(50);
+        sid = stickies().value(0).id;
+        if (NoteCard *sc = np->card(sid)) {
+            auto *ed = sc->findChild<QPlainTextEdit *>();
+            ed->setPlainText("Ask about the boundary term.");
+            key(ed, Qt::Key_Return, Qt::ControlModifier);
+        }
+        wait(300);
+        CHECK(stickies().size() == 1 && stickies().value(0).text == "Ask about the boundary term." && np->noteCount() == before + 1);
+        // a click selects it, a drag moves it, a double-click opens its note
+        NoteCard *sc = np->card(sid);
+        QRectF r0 = stickies().value(0).rect;
+        for (const MarkupNote &m : nd->markups())            // the sidebar's rectangle is where the icon is drawn
+            if (m.id == sid) CHECK(QLineF(m.rect.topLeft(), r0.topLeft()).length() < 0.6 && std::fabs(m.rect.width() - r0.width()) < 0.6);
+        nv->testPointer(0, at, -1, 42000);
+        nv->testPointer(2, at, -1, 42010);
+        CHECK(sc && sc->isLit() && !sc->isEditing());
+        QPointF to = at + QPointF(60, 40);
+        nv->testPointer(0, at, -1, 43000);
+        nv->testPointer(1, to, -1, 43010);
+        nv->testPointer(2, to, -1, 43020);
+        wait(300);
+        QRectF r1 = stickies().value(0).rect;
+        qreal ppp = nv->zoom() * 96.0 / 72.0;
+        std::printf("     sticky note moved by %.1f, %.1f pt\n", r1.x() - r0.x(), r1.y() - r0.y());
+        CHECK(std::fabs(r1.x() - r0.x() - 60 / ppp) < 1 && std::fabs(r1.y() - r0.y() - 40 / ppp) < 1 && r1.size() == r0.size());
+        CHECK(stickies().value(0).id == sid && stickies().value(0).text.startsWith("Ask about"));
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, to, nv->viewport()->mapToGlobal(to), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(nv->viewport(), &dbl);
+        wait(50);
+        sc = np->card(sid);
+        CHECK(sc && sc->isEditing());
+        if (sc) key(sc->findChild<QPlainTextEdit *>(), Qt::Key_Escape);
+        wait(300);
+        CHECK(stickies().size() == 1);                       // a written note survives Esc
+        // so does an empty sticky note that was already in the file, e.g. from another program
+        {
+            int old = nd->addNote(1, QPointF(470, 250), QColor(255, 235, 60));
+            wait(300);
+            QPointF on = nv->pageToView(1, QPointF(470, 250));
+            QMouseEvent open(QEvent::MouseButtonDblClick, on, nv->viewport()->mapToGlobal(on), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(nv->viewport(), &open);
+            wait(50);
+            CHECK(np->card(old) && np->card(old)->isEditing());
+            if (np->card(old)) key(np->card(old)->findChild<QPlainTextEdit *>(), Qt::Key_Escape);
+            wait(300);
+            CHECK(stickies().size() == 2);
+            nd->removeAnnots(1, {old});
+            wait(300);
+        }
+        sc = np->card(sid);
+        CHECK(sc && sc->isVisible() && sc->height() > 20);  // a card without a quoted excerpt
+        nt->window()->grab().save(out + "/9d_sticky.png");
+    }
+
+    // notes on pen strokes: a double-click opens the note of a stroke; it stays with the stroke and goes with it
+    {
+        DocumentTab *nt = w->currentTab();
+        PdfView *nv = nt->view();
+        Document *nd = nt->doc();
+        NotesPanel *np = nt->notesPanel();
+        const int before = np->noteCount();
+        InkData k;
+        InkStroke st;
+        for (int j = 0; j <= 20; ++j) st.pts.push_back(QPointF(380 + j * 5, 470 + 6 * std::sin(j * 0.6)));
+        k.strokes.push_back(st);
+        k.color = QColor(200, 30, 30);
+        k.width = 2;
+        nv->flushInk();
+        int ink = nd->addInk(1, k);
+        wait(300);
+        CHECK(ink > 0 && !np->card(ink) && np->noteCount() == before);     // no note, no card
+        auto noteOf = [&](int id) {
+            for (const AnnotInfo &a : nd->annots(1)) if (a.id == id) return a.text;
+            return QString("(gone)");
+        };
+        w->setTool(Tool::Select);
+        QPointF on = nv->pageToView(1, st.pts[10]);
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, on, nv->viewport()->mapToGlobal(on), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(nv->viewport(), &dbl);
+        wait(50);
+        NoteCard *ic = np->card(ink);
+        CHECK(ic && ic->isEditing());
+        if (ic) {
+            auto *ed = ic->findChild<QPlainTextEdit *>();
+            ed->setPlainText("Sign error here?");
+            QKeyEvent done(QEvent::KeyPress, Qt::Key_Return, Qt::ControlModifier);
+            QApplication::sendEvent(ed, &done);
+        }
+        wait(300);
+        CHECK(noteOf(ink) == "Sign error here?" && np->noteCount() == before + 1);
+        // the line from the note ends on the stroke, at its leftmost point, not at a corner of its box
+        for (const MarkupNote &m : nd->markups())
+            if (m.id == ink) CHECK(QLineF(m.anchor, st.pts.first() - QPointF(k.width / 2 + 1.5, 0)).length() < 0.5);     // beside it
+        // and runs below the text line it would strike through; where there is no text, straight
+        CHECK(nd->clearOfText(1, st.pts.first()) > st.pts.first().y() + 1 && nd->clearOfText(1, QPointF(40, 330)) == 330);
+        // the pointer lights the note where a click would select the stroke, not anywhere in its box
+        if (NoteCard *sc = np->card(ink)) {
+            QPointF away = nv->pageToView(1, QPointF(40, 330));
+            nv->testPointer(0, away, -1, 49000);              // writing the note had selected the stroke
+            nv->testPointer(2, away, -1, 49010);
+            auto moveTo = [&](QPointF pagePt) {
+                QPointF v = nv->pageToView(1, pagePt);
+                QMouseEvent mv(QEvent::MouseMove, v, nv->viewport()->mapToGlobal(v), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(nv->viewport(), &mv);
+            };
+            moveTo(QPointF(420, 475.5));                      // inside the box, off the line
+            CHECK(!sc->isLit());
+            moveTo(st.pts[8]);
+            CHECK(sc->isLit());
+            moveTo(QPointF(40, 330));
+            CHECK(!sc->isLit());
+        }
+        // a note does not change how a stroke is drawn (a highlighter stroke went opaque over the text)
+        {
+            InkData h;
+            InkStroke hs;
+            for (int j = 0; j <= 10; ++j) hs.pts.push_back(QPointF(100 + j * 12, 560));
+            hs.w.fill(9.f, hs.pts.size());
+            h.strokes.push_back(hs);
+            h.color = QColor(255, 235, 60);
+            h.width = 9;
+            h.highlighter = true;
+            int hid = nd->addInk(1, h);
+            const QRect clip(150, 1040, 500, 160);
+            QImage plain = nd->render(1, 2.0, clip);
+            nd->setAnnotContents(1, hid, "Marked with the highlighter.");
+            CHECK(!plain.isNull() && nd->render(1, 2.0, clip) == plain);
+            wait(300);
+            QPointF v = nv->pageToView(1, hs.pts[5]);         // for the picture: the pointer on it, its outline shown
+            QMouseEvent mv(QEvent::MouseMove, v, nv->viewport()->mapToGlobal(v), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(nv->viewport(), &mv);
+            CHECK(np->card(hid) && np->card(hid)->isLit());
+            nt->window()->grab().save(out + "/9g_highlighter_lit.png");
+            // removing the note again leaves the stroke as it was, and no empty comment behind
+            nd->setAnnotContents(1, hid, QString());
+            bool listed = false;
+            for (const MarkupNote &m : nd->markups()) listed = listed || m.id == hid;
+            CHECK(nd->render(1, 2.0, clip) == plain && !listed);
+            nd->removeAnnots(1, {hid});
+            // the line ends at the leftmost point, also when the stroke runs down to the right in small steps
+            InkData dg;
+            InkStroke ds;
+            for (int j = 0; j <= 120; ++j) ds.pts.push_back(QPointF(300 + j * 0.5, 400 + j * 0.5));
+            dg.strokes.push_back(ds);
+            dg.width = 2;
+            int did = nd->addInk(1, dg);
+            nd->setAnnotContents(1, did, "Diagonal.");
+            for (const MarkupNote &m : nd->markups())
+                if (m.id == did) CHECK(QLineF(m.anchor, QPointF(300 - dg.width / 2 - 1.5, 400)).length() < 2);     // not (358, 460)
+            nd->removeAnnots(1, {did});
+            wait(300);
+        }
+        QRectF r0;
+        for (const AnnotInfo &a : nd->annots(1)) if (a.id == ink) r0 = a.rect;
+        nv->testPointer(0, on, -1, 50000);
+        nv->testPointer(1, on + QPointF(40, 30), -1, 50010);
+        nv->testPointer(2, on + QPointF(40, 30), -1, 50020);
+        wait(300);
+        QRectF r1;
+        for (const AnnotInfo &a : nd->annots(1)) if (a.id == ink) r1 = a.rect;
+        CHECK(r1.x() > r0.x() + 5 && noteOf(ink) == "Sign error here?" && np->card(ink));     // moved, note kept
+        if (NoteCard *sc = np->card(ink)) {                   // for the picture: the pointer on the stroke
+            QPointF v = nv->pageToView(1, r1.center() + QPointF(0, 0));
+            for (const InkAnnot &ia : nd->inkAnnots(1)) if (ia.id == ink) v = nv->pageToView(1, ia.data.strokes[0].pts[8]);
+            nv->testPointer(0, nv->pageToView(1, QPointF(40, 330)), -1, 51000);
+            nv->testPointer(2, nv->pageToView(1, QPointF(40, 330)), -1, 51010);
+            QMouseEvent mv(QEvent::MouseMove, v, nv->viewport()->mapToGlobal(v), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(nv->viewport(), &mv);
+            CHECK(sc->isLit());
+        }
+        wait(300);
+        nt->window()->grab().save(out + "/9e_stroke_note.png");
+        {       // for the picture: a selected underline over several text lines
+            QPointF a = nv->pageToView(1, QPointF(200, 290)), b = nv->pageToView(1, QPointF(300, 356));
+            nv->testPointer(0, a, -1, 52000);
+            nv->testPointer(1, b, -1, 52010);
+            nv->testPointer(2, b, -1, 52020);
+            PdfView::setNoteAfterMarking(false);
+            int ul = nv->markupSelection(AnnotKind::Underline, QColor(220, 40, 40));
+            PdfView::setNoteAfterMarking(true);
+            QPointF c = nv->pageToView(1, QPointF(250, 322));
+            nv->testPointer(0, c, -1, 53000);
+            nv->testPointer(2, c, -1, 53010);
+            wait(300);
+            nt->window()->grab().save(out + "/9f_underline_selected.png");
+            nd->removeAnnots(1, {ul});
+            wait(200);
+        }
+        nd->removeAnnots(1, {ink});                          // what the eraser does
+        wait(300);
+        CHECK(!np->card(ink) && np->noteCount() == before);
     }
 
     // fillable forms: type in place, Tab to the next field, checkbox, saved values
