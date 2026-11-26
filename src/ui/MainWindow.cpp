@@ -270,6 +270,14 @@ void MainWindow::buildActions()
     add(viewM, tr("Go to page…"), QKeySequence("Ctrl+G"), [this] { if (pageSpin_) { pageSpin_->setFocus(); pageSpin_->selectAll(); } });
     viewM->addSeparator();
     add(viewM, tr("Show/hide &sidebar"), QKeySequence("F4"), withTab([](DocumentTab *t) { t->toggleSidebar(); }));
+    // As in a browser. Ctrl+Tab is left to Qt, which gives it to whichever tab bar has the keyboard: the
+    // documents with the keyboard on the page, Outline / Pages / Notes with it in the sidebar.
+    add(viewM, tr("&Next document"), QKeySequence("Ctrl+PgDown"), [this] {
+        if (tabs_->count() > 1) tabs_->setCurrentIndex((tabs_->currentIndex() + 1) % tabs_->count());
+    });
+    add(viewM, tr("Pre&vious document"), QKeySequence("Ctrl+PgUp"), [this] {
+        if (tabs_->count() > 1) tabs_->setCurrentIndex((tabs_->currentIndex() + tabs_->count() - 1) % tabs_->count());
+    });
     QMenu *themeM = viewM->addMenu(tr("Page &theme"));
     auto *themeGroup = new QActionGroup(this);
     const QStringList themeNames{tr("&Light"), tr("&Sepia"), tr("&Dark")};

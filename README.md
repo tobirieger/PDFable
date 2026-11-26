@@ -28,7 +28,8 @@ freehand pen ink.*
 - **PDF Creator** (File > Create / merge PDF, or the "PDFable Creator" shortcut, or `PDFable.exe --creator`):
   drop PDFs and images, then join whole files, arrange single pages by hand, or interleave pages (zipper).
 - **Tabs and windows**: several documents in tabs; drag a tab out of the bar to get a new window, drop it on
-  another window's tab bar to move it there.
+  another window's tab bar to move it there. Ctrl+PgDn and Ctrl+PgUp go to the next and
+  previous document.
 - **Link previews**: hover an internal link (citation, figure, equation, section) and a pop-up shows the target
   region of the document. Move the pointer into the pop-up to scroll, select, copy or highlight there.
   Click the link to jump, Alt+Left to return.

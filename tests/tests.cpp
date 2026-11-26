@@ -413,6 +413,25 @@ int main(int argc, char **argv)
     QFile::copy(sample, out + "/second.pdf");
     CHECK(w->openFile(out + "/second.pdf"));
     CHECK(w->tabCount() == 2);
+    {       // Ctrl+PgDown and Ctrl+PgUp go round the open documents
+        QAction *next = nullptr, *previous = nullptr;
+        for (QAction *a : w->findChildren<QAction *>()) {
+            if (a->shortcut() == QKeySequence("Ctrl+PgDown")) next = a;
+            if (a->shortcut() == QKeySequence("Ctrl+PgUp")) previous = a;
+        }
+        DocumentTab *second = w->currentTab();
+        CHECK(next && previous);
+        if (next && previous) {
+            next->trigger();
+            CHECK(w->currentTab() != second);
+            next->trigger();
+            CHECK(w->currentTab() == second);
+            previous->trigger();
+            CHECK(w->currentTab() != second);
+            previous->trigger();
+            CHECK(w->currentTab() == second);
+        }
+    }
     MainWindow *w2 = w->detachTab(1, QPoint(200, 200));
     CHECK(w2 && w2 != w && MainWindow::windows().size() == 2 && w->tabCount() == 1 && w2->tabCount() == 1);
     wait(300);
