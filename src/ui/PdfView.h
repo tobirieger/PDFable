@@ -211,6 +211,7 @@ private:
     void selectAnnot(int page, const ink::AnnotInfo &a);
     void clearAnnotSelection();
     void applyAnnotDrag(bool resized);
+    QRectF keepOnPage(int page, QRectF r) const;   // moved (not resized) so it lies on the page as far as it fits
     QRectF handleRect(int corner, const QRectF &viewRect) const;
     void beginTextEdit(int page, QPointF pt, const ink::AnnotInfo *existing);
     void cancelTextEdit();

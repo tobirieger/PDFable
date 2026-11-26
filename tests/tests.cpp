@@ -1198,6 +1198,33 @@ int main(int argc, char **argv)
         std::printf("     sticky note moved by %.1f, %.1f pt\n", r1.x() - r0.x(), r1.y() - r0.y());
         CHECK(std::fabs(r1.x() - r0.x() - 60 / ppp) < 1 && std::fabs(r1.y() - r0.y() - 40 / ppp) < 1 && r1.size() == r0.size());
         CHECK(stickies().value(0).id == sid && stickies().value(0).text.startsWith("Ask about"));
+        {   // dragged far past the page's corner it stops at the edge, and one already beside the page comes back
+            const QSizeF ps = nd->pageSize(1);
+            const QRectF pageBox(QPointF(0, 0), ps);
+            const QPointF from = nv->pageToView(1, r1.center());
+            const QPointF far = nv->pageToView(1, QPointF(ps.width() + 300, ps.height() + 300));
+            nv->testPointer(0, from, -1, 43500);
+            nv->testPointer(1, far, -1, 43510);
+            nv->testPointer(2, far, -1, 43520);
+            wait(300);
+            const QRectF r2 = stickies().value(0).rect;
+            std::printf("     dragged past the corner: %.1f,%.1f %.1fx%.1f on a %.0fx%.0f page\n", r2.x(), r2.y(), r2.width(), r2.height(), ps.width(), ps.height());
+            CHECK(pageBox.adjusted(-0.01, -0.01, 0.01, 0.01).contains(r2) && std::fabs(r2.right() - ps.width()) < 0.5 && std::fabs(r2.bottom() - ps.height()) < 0.5);
+            nd->setAnnotRect(1, sid, r2.translated(-ps.width() - 200, 0));   // as an earlier version could leave it
+            wait(200);
+            CHECK(!stickies().value(0).rect.intersects(pageBox));
+            nv->selectAnnot(1, sid);                          // from its card in the Notes sidebar
+            wait(200);
+            const QRectF r3 = stickies().value(0).rect;
+            std::printf("     brought back to %.1f,%.1f\n", r3.x(), r3.y());
+            CHECK(pageBox.adjusted(-0.01, -0.01, 0.01, 0.01).contains(r3) && std::fabs(r3.x()) < 0.5 && r3.size() == r2.size());
+            nd->undo();                                       // bringing it back is one step
+            CHECK(!stickies().value(0).rect.intersects(pageBox));
+            nd->redo();
+            nd->setAnnotRect(1, sid, r1);
+            wait(200);
+            nv->selectAnnot(1, sid);
+        }
         QMouseEvent dbl(QEvent::MouseButtonDblClick, to, nv->viewport()->mapToGlobal(to), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(nv->viewport(), &dbl);
         wait(50);

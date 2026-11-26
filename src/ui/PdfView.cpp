@@ -1,4 +1,5 @@
 #include "PdfView.h"
+#include <QTimer>
 
 #include <QApplication>
 #include <QClipboard>
@@ -1224,7 +1225,8 @@ void PdfView::move(const Ptr &e)
         // undo, and two taps on a sticky note or a stroke never counted as a double tap.
         if (annDragRect_ == ann_.rect && QLineF(pressPos_, e.pos).length() < kTapSlop) break;
         QPointF pt = toPage(annPage_, e.pos);
-        annDragRect_ = ann_.rect.translated(pt - annGrab_);
+        // it stops at the page's edge: dropped beside the page, it could be neither seen nor picked up again
+        annDragRect_ = keepOnPage(annPage_, ann_.rect.translated(pt - annGrab_));
         viewport()->update();
         break;
     }
@@ -1233,12 +1235,17 @@ void PdfView::move(const Ptr &e)
         const QRectF &r = ann_.rect;
         QPointF fixed = annCorner_ == 0 ? r.bottomRight() : annCorner_ == 1 ? r.bottomLeft() : annCorner_ == 2 ? r.topLeft() : r.topRight();
         qreal w = qMax(8.0, std::fabs(pt.x() - fixed.x())), h = qMax(8.0, std::fabs(pt.y() - fixed.y()));
+        bool left = annCorner_ == 0 || annCorner_ == 3, top = annCorner_ == 0 || annCorner_ == 1;
         {       // proportional: ink and images scale, text boxes change their font size
             qreal k = qMax(w / r.width(), h / r.height());
+            // ... but not past the page's edge (unless it already was, then not further)
+            const QSizeF ps = doc_->pageSize(annPage_);
+            const qreal roomW = left ? fixed.x() : ps.width() - fixed.x(), roomH = top ? fixed.y() : ps.height() - fixed.y();
+            const qreal kMax = qMin(qMax(roomW, r.width()) / r.width(), qMax(roomH, r.height()) / r.height());
+            k = qMax(qMin(k, kMax), qMax(8.0 / r.width(), 8.0 / r.height()));
             w = r.width() * k;
             h = r.height() * k;
         }
-        bool left = annCorner_ == 0 || annCorner_ == 3, top = annCorner_ == 0 || annCorner_ == 1;
         annDragRect_ = QRectF(left ? fixed.x() - w : fixed.x(), top ? fixed.y() - h : fixed.y(), w, h);
         viewport()->update();
         break;
@@ -1646,6 +1653,27 @@ void PdfView::selectAnnot(int page, const AnnotInfo &a)
     ann_ = a;
     emit noteSelected(a.id);
     viewport()->update();
+    // One that lies wholly beside the page (dragged there before this was prevented, or made so elsewhere) can only
+    // be reached from the Notes sidebar: bring it back onto the page, as one step that can be undone.
+    const QRectF pageBox(QPointF(0, 0), doc_->pageSize(page));
+    if (!isMarkup(a.kind) && !isPreview_ && !a.rect.intersects(pageBox) && !a.rect.isEmpty()) {
+        const int id = a.id;
+        QTimer::singleShot(0, this, [this, page, id] {
+            if (annPage_ != page || ann_.id != id) return;
+            annDragRect_ = keepOnPage(page, ann_.rect);
+            applyAnnotDrag(false);
+            emit statusMessage(tr("Moved back onto the page"));
+            viewport()->update();
+        });
+    }
+}
+
+QRectF PdfView::keepOnPage(int page, QRectF r) const
+{
+    const QSizeF ps = doc_->pageSize(page);
+    auto fit = [](qreal lo, qreal len, qreal room) { return len >= room ? 0.0 : qBound(0.0, lo, room - len); };
+    r.moveTo(fit(r.left(), r.width(), ps.width()), fit(r.top(), r.height(), ps.height()));
+    return r;
 }
 
 void PdfView::clearAnnotSelection()
