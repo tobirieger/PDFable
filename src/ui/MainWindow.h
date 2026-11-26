@@ -130,7 +130,7 @@ private:
     QHash<int, QAction *> toolActions_;
     QVector<SwatchButton *> swatches_;
     SizeSlider *sizeSlider_ = nullptr;
-    QAction *backAct_ = nullptr, *fwdAct_ = nullptr;
+    QAction *backAct_ = nullptr, *fwdAct_ = nullptr, *undoAct_ = nullptr, *redoAct_ = nullptr;
     QLabel *sizeLabel_ = nullptr;
     QVector<QColor> penColors_, hlColors_;
     int penIdx_ = 0, hlIdx_ = 0;

@@ -110,6 +110,7 @@ public:
     // test hooks: feed synthetic pointer input in viewport coordinates
     void testPointer(int phase, QPointF pos, float pressure, qint64 t, bool pen = false);
     bool testHold();
+    bool testBusy() const { return !requested_.isEmpty() || searchTimer_.isActive(); }   // renders or search still running
 
 signals:
     void currentPageChanged(int page);

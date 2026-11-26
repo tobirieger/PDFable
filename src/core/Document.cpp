@@ -151,6 +151,7 @@ void Document::loadBytes(const QByteArray &bytes)
     });
     if (!needsPw_) loadSizes();
     ++gen_;
+    canUndo_ = canRedo_ = false;        // a freshly opened document has no history
     setModified(false);
 }
 
@@ -198,9 +199,11 @@ void Document::loadSizes()
 {
     std::lock_guard<std::recursive_mutex> lk(mu_);
     QVector<QSizeF> s;
+    QVector<int> keys;
     fzrun([&](fz_context *c) {
         int n = pdf_count_pages(c, doc_);
         s.reserve(n);
+        keys.reserve(2 * n);
         for (int i = 0; i < n; ++i) {
             // Compute the visible size from the page dictionary: much cheaper than loading the page.
             pdf_obj *po = pdf_lookup_page_obj(c, doc_, i);
@@ -212,9 +215,11 @@ void Document::loadSizes()
             float w = std::fabs(mb.x1 - mb.x0) * uu, h = std::fabs(mb.y1 - mb.y0) * uu;
             if (((rot % 360) + 360) % 180 == 90) std::swap(w, h);
             s.push_back(QSizeF(w, h));
+            keys << pdf_to_num(c, po) << rot;
         }
     });
     sizes_ = s;
+    pageKeys_ = keys;
 }
 
 void Document::setModified(bool m)
@@ -230,9 +235,17 @@ void Document::touched(int page, bool structure)
     dropStext(structure ? -1 : page);
     setModified(true);
     if (structure) {
+        // Undo and redo, and some page operations, leave every page where it was, as big and as turned as before
+        // (undoing an ink stroke, say). Then only the content changed, which listeners show without starting over;
+        // a structure change would make them drop the pictures, search hits and selection.
+        const QVector<QSizeF> sizes = sizes_;
+        const QVector<int> keys = pageKeys_;
         loadSizes();
+        structure = sizes_ != sizes || pageKeys_ != keys;
+    }
+    if (structure)
         emit structureChanged();
-    } else
+    else
         emit pageChanged(page);
 }
 
@@ -250,6 +263,7 @@ template <class F> void Document::pageOp(int page, const char *name, F &&f)
                 f(c, pg);
                 pdf_update_page(c, pg);
                 pdf_end_operation(c, doc_);
+                noteHistory(c);
             }
             fz_always(c) fz_drop_page(c, reinterpret_cast<fz_page *>(pg));
             fz_catch(c)
@@ -272,6 +286,7 @@ template <class F> void Document::docOp(const char *name, F &&f)
             {
                 f(c);
                 pdf_end_operation(c, doc_);
+                noteHistory(c);
             }
             fz_catch(c)
             {
@@ -1268,29 +1283,33 @@ void Document::assemble(const QVector<AssemblyItem> &items, const QString &outPa
     });
 }
 
-bool Document::canUndo()
+void Document::noteHistory(fz_context *c)
 {
-    std::lock_guard<std::recursive_mutex> lk(mu_);
-    return doc_ && pdf_can_undo(fzctx(), doc_);
-}
-bool Document::canRedo()
-{
-    std::lock_guard<std::recursive_mutex> lk(mu_);
-    return doc_ && pdf_can_redo(fzctx(), doc_);
+    canUndo_ = pdf_can_undo(c, doc_);
+    canRedo_ = pdf_can_redo(c, doc_);
 }
 void Document::undo()
 {
+    bool clean = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
-        fzrun([&](fz_context *c) { pdf_undo(c, doc_); });
+        fzrun([&](fz_context *c) {
+            pdf_undo(c, doc_);
+            noteHistory(c);
+            int steps = 0;
+            clean = pdf_undoredo_state(c, doc_, &steps) == 0;
+        });
     }
     touched(-1, true);
+    // The undo history starts afresh whenever the file is loaded or saved, and every edit is a step in it (MuPDF
+    // refuses changes outside an operation), so its start is the file on disk: back there, there is nothing to save.
+    if (clean) setModified(false);
 }
 void Document::redo()
 {
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
-        fzrun([&](fz_context *c) { pdf_redo(c, doc_); });
+        fzrun([&](fz_context *c) { pdf_redo(c, doc_); noteHistory(c); });
     }
     touched(-1, true);
 }
@@ -1325,6 +1344,7 @@ bool Document::hasSignatures()
 
 void Document::save(const QString &path, bool optimize)
 {
+    bool same = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         QString tmp = path + QStringLiteral(".tmp~");
@@ -1351,10 +1371,20 @@ void Document::save(const QString &path, bool optimize)
         replaceFile(tmp, path);
         QFile f(path);
         if (!f.open(QIODevice::ReadOnly)) throw PdfError(tr("Cannot re-open %1").arg(path));
+        const QVector<QSizeF> sizes = sizes_;
         loadBytes(f.readAll());
         path_ = QFileInfo(path).absoluteFilePath();
+        same = sizes_ == sizes;
     }
-    emit structureChanged();
+    // The file just written is the document on screen, so its pages are the same: say that every page may have
+    // changed rather than the structure, so the view keeps its pictures, search hits and selection. Every page,
+    // because annotation and field ids are object numbers, which an optimised save renumbers (so the page keys
+    // may differ too, and are not compared). Should the file read back differ after all, say so.
+    if (same)
+        emit pageChanged(-1);
+    else
+        emit structureChanged();
+    emit saved();
 }
 
 #ifdef PDFABLE_SIGNING

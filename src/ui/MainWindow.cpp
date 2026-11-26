@@ -244,8 +244,8 @@ void MainWindow::buildActions()
     add(file, tr("&Quit"), QKeySequence("Ctrl+Q"), [] { for (MainWindow *w : MainWindow::windows()) w->close(); });
 
     QMenu *edit = menuBar()->addMenu(tr("&Edit"));
-    QAction *undo = add(edit, tr("&Undo"), QKeySequence::Undo, withTab([](DocumentTab *t) { t->undo(); }));
-    QAction *redo = add(edit, tr("&Redo"), QKeySequence("Ctrl+Y"), withTab([](DocumentTab *t) { t->redo(); }));
+    QAction *undo = undoAct_ = add(edit, tr("&Undo"), QKeySequence::Undo, withTab([](DocumentTab *t) { t->undo(); }));
+    QAction *redo = redoAct_ = add(edit, tr("&Redo"), QKeySequence("Ctrl+Y"), withTab([](DocumentTab *t) { t->redo(); }));
     edit->addSeparator();
     add(edit, tr("&Copy"), QKeySequence::Copy, withTab([](DocumentTab *t) { t->view()->copySelection(); }));
     add(edit, tr("&Highlight selection (with note)"), QKeySequence("Ctrl+H"), withTab([this](DocumentTab *t) { t->view()->markupSelection(AnnotKind::Highlight, hl_.color); }));
@@ -664,6 +664,8 @@ void MainWindow::updateUi()
 {
     DocumentTab *t = currentTab();
     setWindowTitle(t ? t->title() + " – PDFable" : QString("PDFable"));
+    undoAct_->setEnabled(t && t->doc()->canUndo());
+    redoAct_->setEnabled(t && t->doc()->canRedo());
     for (int i = 0; i < tabs_->count(); ++i) {
         auto *dt = static_cast<DocumentTab *>(tabs_->widget(i));
         tabs_->setTabText(i, dt->title());
@@ -688,7 +690,11 @@ void MainWindow::addTab(DocumentTab *tab, int index)
     int i = tabs_->insertTab(index < 0 ? tabs_->count() : index, tab, tab->title());
     tab->disconnect(this);
     tab->view()->disconnect(this);
+    tab->doc()->disconnect(this);
     connect(tab, &DocumentTab::titleChanged, this, &MainWindow::updateUi);
+    // every edit, undo and redo: Undo and Redo are greyed out while there is nothing to undo or redo
+    connect(tab->doc(), &Document::pageChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
+    connect(tab->doc(), &Document::structureChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
     connect(tab, &DocumentTab::statusMessage, this, [this](const QString &m) { statusBar()->showMessage(m, 6000); });
     connect(tab->view(), &PdfView::currentPageChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });
     connect(tab->view(), &PdfView::zoomChanged, this, [this, tab] { if (tab == currentTab()) updateUi(); });

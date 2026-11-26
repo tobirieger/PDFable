@@ -399,17 +399,27 @@ void PdfView::onRendered(const RenderJob &job, const QImage &img)
     viewport()->update();
 }
 
-void PdfView::onPageChanged(int)
+void PdfView::onPageChanged(int page)
 {
     linkCache_.clear();
     fieldCache_.clear();
+    // Undo, redo and saving may change any page: keep the selected annotation only while it is still there unchanged.
+    // Its id alone is not enough: it is an object number, and an optimised save renumbers the objects, so the old
+    // number often names another stroke on the same page, which Delete or a drag would then act on. An undo that
+    // moved or resized the annotation lets go of it, as every undo did before.
+    if (page < 0 && annPage_ >= 0) {
+        bool same = false;
+        for (const AnnotInfo &a : doc_->annots(annPage_))
+            same = same || (a.id == ann_.id && a.kind == ann_.kind && a.rect == ann_.rect);
+        if (!same) annPage_ = -1;
+    }
     viewport()->update();
 }
 
 void PdfView::onStructureChanged()
 {
     cancelFieldEdit();
-    tiles_.clear();
+    const QVector<QRectF> before = pageRects_;
     requested_.clear();
     linkCache_.clear();
     fieldCache_.clear();
@@ -423,6 +433,11 @@ void PdfView::onStructureChanged()
     for (int i = pending_.size() - 1; i >= 0; --i)
         if (pending_[i].committed) pending_.removeAt(i);
     relayout();
+    // Reloading a file another program rewrote mostly leaves the page frames where they were: keep the old
+    // pictures on screen until the new ones arrive, as after any other edit, instead of blanking the view.
+    // Where pages of one size swapped places that shows the old pictures for a moment, still better than
+    // blank paper; only where page frames moved or changed size would they be drawn wrongly.
+    if (pageRects_ != before) tiles_.clear();
     rebuildOverlay();
     viewport()->update();
     emit currentPageChanged(currentPage());

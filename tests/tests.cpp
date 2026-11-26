@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QLabel>
 #include <QScrollBar>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QMouseEvent>
@@ -17,12 +18,13 @@
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLineEdit>
-#include <QTreeWidget>
 #include <QListWidget>
 #include <QTabWidget>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QTimer>
 #include <cmath>
+#include <functional>
 #include <cstdio>
 
 using namespace ink;
@@ -34,6 +36,26 @@ static void wait(int ms)
     QEventLoop l;
     QTimer::singleShot(ms, &l, &QEventLoop::quit);
     l.exec();
+}
+
+// Run the event loop until cond holds, at most ms milliseconds: renders arrive from a worker thread, whose pace
+// depends on the machine.
+static bool waitFor(const std::function<bool()> &cond, int ms = 20000)
+{
+    QElapsedTimer t;
+    t.start();
+    while (!cond()) {
+        if (t.elapsed() > ms) return false;
+        wait(20);
+    }
+    return true;
+}
+
+// The view once everything it shows is rendered and searched (painting asks for the pictures still missing).
+static QImage settled(PdfView *v)
+{
+    waitFor([v] { v->viewport()->grab(); return !v->testBusy(); });
+    return v->viewport()->grab().toImage();
 }
 
 int main(int argc, char **argv)
@@ -91,6 +113,12 @@ int main(int argc, char **argv)
     Document *d = tab->doc();
     CHECK(d->pageCount() == 6);
     CHECK(d->outline().size() == 6);
+    QAction *undoAct = nullptr, *redoAct = nullptr;         // greyed out while there is nothing to undo or redo
+    for (QAction *a : w->findChildren<QAction *>()) {
+        if (a->text() == "&Undo") undoAct = a;
+        if (a->text() == "&Redo") redoAct = a;
+    }
+    CHECK(undoAct && redoAct && !undoAct->isEnabled() && !redoAct->isEnabled());
     wait(500);
     w->grab().save(out + "/1_open.png");
 
@@ -149,6 +177,25 @@ int main(int argc, char **argv)
     wait(300);
     std::printf("     search=%d\n", v->searchCount());
     CHECK(v->searchCount() >= 6 * 28);
+    // undo and redo of the highlight change nothing else: the frame right after each is the one before (the new
+    // picture is still being rendered), and once it arrives only the highlight differs; hits and selection stay
+    {
+        v->testPointer(0, {190, 400}, -1, 5300);
+        v->testPointer(1, {520, 404}, -1, 5400);
+        v->testPointer(2, {520, 404}, -1, 5500);
+        CHECK(v->hasTextSelection());
+        const QImage marked = settled(v);
+        const int hits = v->searchCount();
+        tab->undo();
+        CHECK(d->annots(pg).size() == 3);
+        CHECK(v->viewport()->grab().toImage() == marked);
+        const QImage unmarked = settled(v);
+        CHECK(unmarked != marked && v->searchCount() == hits && v->hasTextSelection());
+        tab->redo();
+        CHECK(d->annots(pg).size() == 4);
+        CHECK(v->viewport()->grab().toImage() == unmarked);
+        CHECK(settled(v) == marked && v->searchCount() == hits && v->hasTextSelection());
+    }
     v->findNext(true);
     wait(300);
     v->viewport()->grab().save(out + "/4_search_select.png");
@@ -427,17 +474,46 @@ int main(int argc, char **argv)
         v->viewport()->grab().save(out + "/7_signature_placed.png");
     }
 
+    // Undo and Redo follow the history
+    {
+        InkData k;
+        InkStroke s;
+        s.pts = {QPointF(60, 700), QPointF(90, 720)};
+        k.strokes.push_back(s);
+        d->addInk(0, k);
+        CHECK(undoAct->isEnabled() && !redoAct->isEnabled());
+        tab->undo();
+        CHECK(redoAct->isEnabled());
+        tab->redo();
+        CHECK(undoAct->isEnabled() && !redoAct->isEnabled());
+        tab->undo();
+    }
+
     // page organizer: reorder, rotate, delete, insert, extract, merge
+    // undoing a move of pages of one size is still a change of structure: the outline points at the pages again
+    QTreeWidget *outlineTree = nullptr;
+    for (QTreeWidget *t : tab->findChildren<QTreeWidget *>())
+        if (t->topLevelItemCount() == 6) outlineTree = t;
+    CHECK(outlineTree != nullptr);
+    QListWidget *pageList = tab->findChild<QListWidget *>();
     tab->rearrange({1, 0, 2, 3, 4, 5});
     CHECK(d->selectionText(0, {72, 80}, {200, 95}).startsWith("Section 2"));
+    CHECK(outlineTree->topLevelItem(0)->data(0, Qt::UserRole).toInt() == 1);
+    pageList->item(0)->setSelected(true);
     tab->undo();
     CHECK(d->selectionText(0, {72, 80}, {200, 95}).startsWith("Section 1"));
+    CHECK(outlineTree->topLevelItem(0)->data(0, Qt::UserRole).toInt() == 0);
+    CHECK(pageList->selectedItems().isEmpty());          // the selected row now holds another page: Delete must not hit it
     d->rotatePages({1}, 90);
     CHECK(d->pageSize(1).width() > d->pageSize(1).height());
     d->insertBlank(1, QSizeF(300, 300));
     CHECK(d->pageCount() == 7);
     d->rearrange({0, 2, 3, 4, 5, 6});
-    CHECK(d->pageCount() == 6);
+    CHECK(d->pageCount() == 6 && pageList->count() == 6);
+    tab->undo();                                        // the deleted page comes back, in the Pages list too
+    CHECK(d->pageCount() == 7 && pageList->count() == 7);
+    tab->redo();
+    CHECK(d->pageCount() == 6 && pageList->count() == 6);
     d->extractPages({0, 4}, out + "/extract.pdf");
     Document::mergeFiles({out + "/extract.pdf", sample}, out + "/merged.pdf");
     {
@@ -492,11 +568,85 @@ int main(int argc, char **argv)
         wait(100);
     }
 
-    // save, reopen: ink survives with widths
+    // save, reopen: ink survives with widths; the view keeps showing the pages and the search hits meanwhile
+    v->gotoPage(0, 0, false);
+    v->setSearch("kinetic");
+    const QImage shown = settled(v);
+    const int hitsBefore = v->searchCount();
     CHECK(tab->save());
+    CHECK(v->viewport()->grab().toImage() == shown);
+    CHECK(hitsBefore > 0 && v->searchCount() == hitsBefore);
+    v->setSearch(QString());
     CHECK(!d->isModified());
     CHECK(d->inkAnnots(0).size() == 4);
     CHECK(!d->inkAnnots(0)[0].data.strokes[0].w.isEmpty());
+
+    // an optimised save renumbers the objects, so the old id of a selected stroke may now name another one: Delete
+    // must then remove the selected stroke or nothing, never a different one
+    {
+        const int sp = 5, chosen = 0;
+        for (int k = 0; k < 20; ++k) {
+            InkData s;
+            s.strokes = {InkStroke{{QPointF(100, 100 + 30 * k), QPointF(400, 100 + 30 * k)}, {}}};
+            s.width = 6;
+            d->addInk(sp, s);
+        }
+        auto rowOf = [](const InkAnnot &a) { return qRound((a.data.bounds().center().y() - 100) / 30); };
+        auto rows = [&] {
+            QVector<int> r;
+            for (const InkAnnot &a : d->inkAnnots(sp)) r.push_back(rowOf(a));
+            std::sort(r.begin(), r.end());
+            return r;
+        };
+        int oldId = 0;
+        for (const InkAnnot &a : d->inkAnnots(sp))
+            if (rowOf(a) == chosen) oldId = a.id;
+        const QVector<int> before = rows();
+        v->gotoPage(sp, 0, false);
+        w->setTool(Tool::Select);
+        const QPointF at = v->pageToView(sp, {250, 100 + 30.0 * chosen});
+        v->testPointer(0, at, -1, 20000);
+        v->testPointer(2, at, -1, 20050);
+        d->save(d->path(), true);
+        bool taken = false;            // the case under test: the old id now belongs to another stroke
+        for (const InkAnnot &a : d->inkAnnots(sp)) taken = taken || (a.id == oldId && rowOf(a) != chosen);
+        CHECK(taken);
+        QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+        QApplication::sendEvent(v, &del);
+        QVector<int> expect = before;
+        expect.removeOne(chosen);
+        CHECK(rows() == before || rows() == expect);
+        CHECK(tab->save());
+    }
+
+    // undoing back to the saved state leaves nothing to save, in the title and when closing; redo or another edit
+    // changes that again
+    {
+        auto stroke = [](qreal y) { InkData s; s.strokes = {InkStroke{{QPointF(100, y), QPointF(300, y)}, {}}}; return s; };
+        auto starred = [&] { return tab->title().endsWith(" *") && w->windowTitle().contains(" *"); };
+        CHECK(!d->isModified() && !starred());
+        d->addInk(4, stroke(700));
+        CHECK(d->isModified() && starred());
+        tab->undo();
+        CHECK(!d->isModified() && !starred());
+        {
+            QTimer answer;            // should the "save changes?" question come up, cancel it rather than hang
+            answer.setSingleShot(true);
+            QObject::connect(&answer, &QTimer::timeout, [] { if (QWidget *m = QApplication::activeModalWidget()) m->close(); });
+            answer.start(1000);
+            CHECK(tab->maybeSave());
+        }
+        tab->redo();
+        CHECK(d->isModified() && starred());
+        tab->undo();
+        d->addInk(4, stroke(720));    // a different edit from the saved state
+        CHECK(d->isModified() && !d->canRedo());
+        d->addInk(4, stroke(740));
+        tab->undo();                  // one of two edits undone: still one to save
+        CHECK(d->isModified());
+        CHECK(tab->save());
+        CHECK(!d->isModified() && !starred());
+    }
 
     // view state round trip, night mode, area copy, reload after an external change
     {
@@ -807,6 +957,18 @@ int main(int argc, char **argv)
         auto sigs = d->signatures({});
         CHECK(sigs.size() == 1 && sigs[0].digestOk && sigs[0].coversWholeFile && !sigs[0].trusted);
         CHECK(d->signatures({sigs[0].certDer})[0].trusted);
+        // a signed file is saved incrementally, but the undo history still starts afresh from the file on disk
+        InkData s;
+        s.strokes = {InkStroke{{QPointF(100, 600), QPointF(300, 600)}, {}}};
+        CHECK(!d->isModified());
+        d->addInk(1, s);
+        tab->undo();
+        CHECK(!d->isModified());
+        d->addInk(1, s);
+        CHECK(tab->save() && !d->isModified());
+        d->addInk(1, s);
+        tab->undo();
+        CHECK(!d->isModified() && d->signatures({})[0].digestOk);
     }
 #endif
     std::printf("%s (%d failure%s)\n", fails ? "FAILED" : "ALL PASSED", fails, fails == 1 ? "" : "s");
