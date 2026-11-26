@@ -77,6 +77,8 @@ static void applyColors(QApplication &app)
 
     const QString hover = g_dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
     const QString soft = QString("rgba(%1,%2,%3,%4)").arg(accent().red()).arg(accent().green()).arg(accent().blue()).arg(g_dark ? "0.24" : "0.13");
+    // the selected entry of the list that has the keyboard: the arrow keys and Enter act there, not on the page
+    const QString soft2 = QString("rgba(%1,%2,%3,%4)").arg(accent().red()).arg(accent().green()).arg(accent().blue()).arg(g_dark ? "0.44" : "0.27");
     QString qss = QString::fromLatin1(R"(
 QMainWindow, QDialog { background: %WINDOW%; }
 QMenuBar { background: %WINDOW%; padding: 2px 4px; }
@@ -104,6 +106,7 @@ QTreeWidget, QListWidget { border: none; background: %BASE%; outline: 0; }
 QTreeWidget::item { padding: 4px 2px; border-radius: 5px; }
 QTreeWidget::item:hover, QListWidget::item:hover { background: %HOVER%; }
 QTreeWidget::item:selected, QListWidget::item:selected { background: %SOFT%; color: %TEXT%; }
+QTreeWidget::item:selected:focus, QListWidget::item:selected:focus { background: %SOFT2%; }
 QListWidget::item { border-radius: 6px; }
 QLineEdit, QSpinBox, QComboBox { border: 1px solid %MID%; border-radius: 6px; padding: 4px 8px; background: %BASE%; }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid %ACCENT%; }
@@ -122,7 +125,7 @@ QToolTip { background: %BASE%; color: %TEXT%; border: 1px solid %MID%; padding: 
 )");
     qss.replace("%WINDOW%", window.name()).replace("%BASE%", base.name()).replace("%TEXT%", text.name());
     qss.replace("%MID%", mid.name()).replace("%DIM%", dim.name()).replace("%ACCENT%", accent().name());
-    qss.replace("%ONACCENT%", g_dark ? "#10141a" : "#ffffff").replace("%HOVER%", hover).replace("%SOFT%", soft);
+    qss.replace("%ONACCENT%", g_dark ? "#10141a" : "#ffffff").replace("%HOVER%", hover).replace("%SOFT2%", soft2).replace("%SOFT%", soft);
     qss.replace("%SCROLL%", g_dark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)");
     app.setStyleSheet(qss);
 }

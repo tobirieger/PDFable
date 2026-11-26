@@ -119,6 +119,22 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
         view_->gotoPage(it->data(0, Qt::UserRole).toInt(), it->data(0, Qt::UserRole + 1).toDouble());
     });
     connect(pages_, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) { view_->gotoPage(pages_->row(it), 0); });
+    // The keyboard does what the mouse does: moving through the outline or the Pages list with the arrow keys
+    // takes the document along, like a click. Enter goes there as well and hands the keyboard to the page.
+    connect(outline_, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *it) {
+        if (it && outline_->hasFocus()) view_->gotoPage(it->data(0, Qt::UserRole).toInt(), it->data(0, Qt::UserRole + 1).toDouble());
+    });
+    connect(outline_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *it) {
+        view_->gotoPage(it->data(0, Qt::UserRole).toInt(), it->data(0, Qt::UserRole + 1).toDouble());
+        view_->setFocus();
+    });
+    connect(pages_, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0 && pages_->hasFocus()) view_->gotoPage(row, 0);
+    });
+    connect(pages_, &QListWidget::itemActivated, this, [this](QListWidgetItem *it) {
+        view_->gotoPage(pages_->row(it), 0);
+        view_->setFocus();
+    });
     connect(pages_->model(), &QAbstractItemModel::rowsMoved, this, [this] { QTimer::singleShot(0, this, &DocumentTab::pagesMoved); });
     connect(pages_->verticalScrollBar(), &QScrollBar::valueChanged, this, &DocumentTab::requestThumbs);
     // the list got taller or shorter (the window is often resized right after a file was opened)

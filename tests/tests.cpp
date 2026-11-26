@@ -17,6 +17,7 @@
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QTreeWidget>
 #include <QListWidget>
 #include <QTabWidget>
 #include <QToolButton>
@@ -451,6 +452,45 @@ int main(int argc, char **argv)
     tab->findChild<QTabWidget *>()->setCurrentIndex(1);
     wait(800);
     w->grab().save(out + "/8_pages_panel.png");
+
+    // the keyboard in the Pages list and in the outline: the arrow keys take the document along, like a click,
+    // and Enter hands the keyboard to the page
+    {
+        auto *side = tab->findChild<QTabWidget *>();
+        auto *tree = qobject_cast<QTreeWidget *>(side->widget(0));
+        auto *list = qobject_cast<QListWidget *>(side->widget(1));
+        w->activateWindow();
+        wait(50);
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier), enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        v->gotoPage(0, 0, false);
+        list->setFocus();
+        list->setCurrentRow(2);
+        CHECK(list->hasFocus() && v->currentPage() == 2);
+        QApplication::sendEvent(list, &down);
+        CHECK(v->currentPage() == 3);
+        QApplication::sendEvent(list, &enter);
+        CHECK(v->hasFocus() && v->currentPage() == 3);
+        side->setCurrentIndex(0);
+        wait(100);
+        auto target = [&](QTreeWidgetItem *it) {      // where a click on the entry takes the view
+            const int at = v->verticalScrollBar()->value();
+            v->gotoPage(it->data(0, Qt::UserRole).toInt(), it->data(0, Qt::UserRole + 1).toDouble(), false);
+            const int to = v->verticalScrollBar()->value();
+            v->verticalScrollBar()->setValue(at);
+            return to;
+        };
+        tree->setFocus();
+        tree->setCurrentItem(tree->topLevelItem(1));
+        CHECK(tree->hasFocus() && v->verticalScrollBar()->value() == target(tree->topLevelItem(1)));
+        QApplication::sendEvent(tree, &down);
+        CHECK(tree->currentItem() != tree->topLevelItem(1) && v->verticalScrollBar()->value() == target(tree->currentItem()));
+        // the selected entry is drawn stronger while its list has the keyboard
+        const QImage held = tree->grab().toImage();
+        QApplication::sendEvent(tree, &enter);
+        CHECK(v->hasFocus() && tree->grab().toImage() != held);
+        side->setCurrentIndex(1);
+        wait(100);
+    }
 
     // save, reopen: ink survives with widths
     CHECK(tab->save());

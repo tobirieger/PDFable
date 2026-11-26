@@ -21,7 +21,9 @@ freehand pen ink.*
   PDF in Explorer, opens the file as a tab in the running window; page themes Light, Sepia and Dark (dark grey
   paper, light text, colours keep their hue; Ctrl+I toggles); full screen (F11); copy any area of a page as an
   image (Ctrl+Shift+C); adjustable scroll speed (Edit > Preferences); back/forward also for scroll positions
-  (Alt+Left/Right, mouse back button).
+  (Alt+Left/Right, mouse back button). In the outline and in the Pages sidebar the arrow keys take the
+  document along, and Enter hands the keyboard back to the page; the selected entry is drawn stronger
+  while its list has the keyboard.
 - **Pen, mouse, finger**: the pen and the mouse each keep their own tool. Tap a toolbar button with the pen to
   set the pen's tool, click it with the mouse for the mouse's tool. When the pen is used, the mouse returns to
   selecting/navigating. A finger only pans and zooms.
