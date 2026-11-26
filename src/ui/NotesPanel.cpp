@@ -2,6 +2,7 @@
 #include "PdfView.h"
 
 #include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QLabel>
 #include <QLocale>
 #include <QMenu>
