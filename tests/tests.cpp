@@ -17,6 +17,7 @@
 #include <QFrame>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QTimer>
@@ -526,6 +527,30 @@ int main(int argc, char **argv)
         CHECK(again.fields(0)[0].value == "Erika Mustermann" && again.fields(0)[3].checked);
         wait(400);
         fv->viewport()->grab().save(out + "/9b_form_filled.png");
+    }
+
+    // page previews: the pages that come into view when the window grows are rendered as well
+    {
+        QFile::remove(out + "/previews.pdf");
+        QFile::copy(sample, out + "/previews.pdf");
+        w->resize(w->width(), 620);
+        CHECK(w->openFile(out + "/previews.pdf"));
+        DocumentTab *pt = w->currentTab();
+        auto *side = pt->findChild<QTabWidget *>();
+        auto *list = pt->findChild<QListWidget *>();
+        for (int i = 0; i < side->count(); ++i)
+            if (side->tabText(i).remove('&') == "Pages") side->setCurrentIndex(i);
+        auto previews = [&] {
+            int n = 0;
+            for (int i = 0; i < list->count(); ++i) n += list->item(i)->data(Qt::UserRole + 1).toBool();
+            return n;
+        };
+        wait(1200);
+        int small = previews();
+        w->resize(w->width(), 1500);
+        wait(1500);
+        std::printf("     previews: %d of %d, %d after the window grew\n", small, list->count(), previews());
+        CHECK(small > 0 && small < list->count() && previews() == list->count());
     }
 
 #ifdef PDFABLE_SIGNING

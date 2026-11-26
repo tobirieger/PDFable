@@ -120,6 +120,8 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
     connect(pages_, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) { view_->gotoPage(pages_->row(it), 0); });
     connect(pages_->model(), &QAbstractItemModel::rowsMoved, this, [this] { QTimer::singleShot(0, this, &DocumentTab::pagesMoved); });
     connect(pages_->verticalScrollBar(), &QScrollBar::valueChanged, this, &DocumentTab::requestThumbs);
+    // the list got taller or shorter (the window is often resized right after a file was opened)
+    connect(pages_->verticalScrollBar(), &QScrollBar::rangeChanged, this, &DocumentTab::requestThumbs);
     connect(side_, &QTabWidget::currentChanged, this, &DocumentTab::requestThumbs);
     connect(side_, &QTabWidget::currentChanged, this, &DocumentTab::updateNotesActive);
     notesTimer_ = new QTimer(this);
