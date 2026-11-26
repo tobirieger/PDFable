@@ -153,6 +153,149 @@ int main(int argc, char **argv)
     v->viewport()->grab().save(out + "/4_search_select.png");
     v->setSearch(QString());
 
+    // search marks are replaced in the same frame while typing, instead of flashing off until the background search
+    // gets round to the page in view
+    {
+        auto finish = [&] { for (int i = 0; i < 500 && v->searching(); ++i) wait(10); return !v->searching(); };
+        auto visible = [&](int page) {   // the part of a page in view, in viewport pixels
+            QSizeF s = d->pageSize(page);
+            return QRectF(v->pageToView(page, {0, 0}), v->pageToView(page, {s.width(), s.height()})).toAlignedRect().intersected(v->viewport()->rect());
+        };
+        auto marks = [](const QImage &img, const QRect &r) {   // pixels tinted yellow or orange by search marks
+            int n = 0;
+            for (int y = r.top(); y <= r.bottom(); ++y)
+                for (int x = r.left(); x <= r.right(); ++x) {
+                    QColor c = img.pixelColor(x, y);
+                    n += c.red() > 200 && c.green() > 150 && c.red() - c.blue() > 60;
+                }
+            return n;
+        };
+        auto grab = [&] { return v->viewport()->grab().toImage(); };
+        const QString term = "kinetic";
+
+        v->gotoPage(2, 300, false);
+        wait(500);
+        const int cur = v->currentPage();
+        CHECK(marks(grab(), visible(cur)) == 0);
+        v->setSearch(term);
+        const int early = v->searchCount();
+        const QImage first = grab();
+        const QRect area = visible(cur);                   // the first hit may have been cut off at the top: the view moved to show it
+        const QPoint topA = v->pageToView(cur, {0, 0}).toPoint();
+        std::printf("     right after setSearch: %d hits, %d marked pixels on page %d\n", early, marks(first, area), cur + 1);
+        CHECK(early > 0);
+        CHECK(marks(first, area) > 0);
+        CHECK(finish());
+        // The current hit is found and drawn orange in that first frame already: once the search has finished, the
+        // part of the page in view must look the same.
+        const QImage done = grab();
+        const QPoint topB = v->pageToView(cur, {0, 0}).toPoint();
+        const QRect both = area.translated(-topA).intersected(visible(cur).translated(-topB));
+        int compared = 0, differ = 0;
+        for (int y = both.top(); y <= both.bottom(); ++y)
+            for (int x = both.left(); x <= both.right(); ++x) {
+                ++compared;
+                differ += first.pixel(QPoint(x, y) + topA) != done.pixel(QPoint(x, y) + topB);
+            }
+        std::printf("     compared %d page pixels (%d marked), %d differ\n", compared, marks(done, both.translated(topB)), differ);
+        CHECK(compared > 10000 && marks(done, both.translated(topB)) > 1000 && differ == 0);
+
+        // type the term letter by letter; every other keystroke arrives while the previous background search still runs
+        v->setSearch(QString());
+        bool marked = true;
+        for (int i = 1; i <= term.size(); ++i) {
+            v->setSearch(term.left(i));
+            marked &= marks(grab(), visible(v->currentPage())) > 0;
+            if (i % 2) {
+                QCoreApplication::processEvents();
+                marked &= marks(grab(), visible(v->currentPage())) > 0;
+            }
+        }
+        CHECK(marked);
+        CHECK(finish());
+        QVector<int> perPage;
+        int total = 0;
+        for (int p = 0; p < d->pageCount(); ++p) total += perPage.emplace_back(int(d->search(p, term).size()));
+        std::printf("     %d hits, the pages hold %d\n", v->searchCount(), total);
+        CHECK(v->searchCount() == total);
+
+        // Started further down, the current hit is the first one at or after the top of the view (wrapping round), and
+        // findNext goes from there through every hit once in each direction and comes back to it.
+        v->setSearch(QString());
+        v->gotoPage(4, 200, false);
+        const ViewState from = v->viewState();
+        v->setSearch(term);
+        CHECK(finish());
+        int ordinal0 = 0;
+        for (int step = 0; step <= d->pageCount() && !ordinal0; ++step) {
+            const int p = (from.page + step) % d->pageCount();
+            const QVector<QPolygonF> hs = d->search(p, term);
+            int first = 0;
+            while (step == 0 && first < hs.size() && hs[first].boundingRect().bottom() < from.y) ++first;
+            if (first == hs.size()) continue;
+            ordinal0 = first + 1;
+            for (int b = 0; b < p; ++b) ordinal0 += perPage[b];
+        }
+        QVector<int> seen;
+        auto conn = QObject::connect(v, &PdfView::searchChanged, [&](int, int c) { seen.push_back(c); });
+        for (int i = 0; i < total; ++i) v->findNext(true);
+        for (int i = 0; i < total; ++i) v->findNext(false);
+        QObject::disconnect(conn);
+        bool fwd = seen.size() == 2 * total, back = fwd;
+        int o = ordinal0;
+        for (int i = 0; i < total && fwd; ++i) { o = o % total + 1; fwd = seen[i] == o; }
+        for (int i = 0; i < total && back; ++i) { o = (o + total - 2) % total + 1; back = seen[total + i] == o; }
+        CHECK(fwd);
+        CHECK(back);
+        // typing on: a longer term is only looked for where the shorter one was found, and must find what a
+        // fresh search of the whole document finds; a shorter or different term starts from scratch
+        auto everywhere = [&](const QString &t) {
+            int n = 0;
+            for (int p = 0; p < d->pageCount(); ++p) n += d->search(p, t).size();
+            return n;
+        };
+        bool same = true;
+        for (const QString &t : {QString("Line 17"), QString("Line 17 of page 2"), QString("Line 17 of page 2."), QString("Line 17"), QString("kinetic")}) {
+            v->setSearch(t);
+            same = same && finish() && v->searchCount() == everywhere(t);
+        }
+        CHECK(same && everywhere("Line 17 of page 2") > 0 && everywhere("Line 17 of page 2") < everywhere("Line 17"));
+        // While a term is typed, the search starts from where it began: the view stays put as long as the current
+        // hit is in view,
+        v->setSearch(QString());
+        v->gotoPage(1, 0, false);
+        const int rest = v->verticalScrollBar()->value();
+        bool still = true;
+        for (const QString &t : {QString("Line"), QString("Line 1"), QString("Line 1 of page 2")}) {
+            v->setSearch(t);
+            still = still && finish() && v->verticalScrollBar()->value() == rest;
+        }
+        CHECK(still);
+        // moves on when the term only matches further down, and comes back when letters are deleted again
+        v->setSearch("Line 1 of page 4");
+        CHECK(finish() && v->currentPage() == 3);
+        v->setSearch("Line 1 of page");
+        CHECK(finish() && v->currentPage() == 1);
+        // "find next" moves the starting point: typing on continues from that hit instead of jumping back
+        v->setSearch("Line 1");
+        CHECK(finish() && v->currentPage() == 1);
+        for (int i = 0; i < 200 && v->currentPage() != 3; ++i) v->findNext(true);
+        v->setSearch("Line 1 of");
+        CHECK(finish() && v->currentPage() == 3);
+        // Esc in the search field closes the search, like its close button: the marks go, the page has the keyboard
+        tab->showSearch();
+        auto *field = tab->findChild<QLineEdit *>();
+        field->setText("kinetic");
+        CHECK(finish() && field->isVisible() && v->searchCount() > 0);
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(field, &esc);
+        CHECK(!field->isVisible() && v->searchCount() == 0 && v->hasFocus());
+        bool previous = false;                              // Shift+F3
+        for (QAction *a : w->findChildren<QAction *>()) previous = previous || a->shortcut() == QKeySequence(QKeySequence::FindPrevious);
+        CHECK(previous);
+        v->setSearch(QString());
+    }
+
     // link hover preview
     v->gotoPage(0, 600, false);
     wait(200);

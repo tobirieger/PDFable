@@ -347,6 +347,7 @@ void MainWindow::buildActions()
     });
 
     add(edit, tr("Find &next"), QKeySequence::FindNext, withTab([](DocumentTab *t) { t->view()->findNext(true); }));
+    add(edit, tr("Find pre&vious"), QKeySequence::FindPrevious, withTab([](DocumentTab *t) { t->view()->findNext(false); }));
 
     QToolBar *tb = addToolBar(tr("Main"));
     tb->setMovable(false);

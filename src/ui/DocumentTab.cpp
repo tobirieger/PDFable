@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -192,11 +193,8 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
     connect(searchEdit_, &QLineEdit::returnPressed, this, [this] { view_->findNext(!(QApplication::keyboardModifiers() & Qt::ShiftModifier)); });
     connect(next, &QToolButton::clicked, this, [this] { view_->findNext(true); });
     connect(prev, &QToolButton::clicked, this, [this] { view_->findNext(false); });
-    connect(close, &QToolButton::clicked, this, [this] {
-        searchBar_->hide();
-        searchEdit_->clear();
-        view_->setFocus();
-    });
+    connect(close, &QToolButton::clicked, this, &DocumentTab::closeSearch);
+    searchEdit_->installEventFilter(this);      // Esc closes the search, like the button
     connect(view_, &PdfView::searchChanged, this, [this](int total, int cur) {
         searchInfo_->setText(searchEdit_->text().isEmpty() ? QString() : total == 0 ? tr("No matches") : cur > 0 ? tr("%1 of %2").arg(cur).arg(total) : tr("%1 matches").arg(total));
     });
@@ -425,6 +423,22 @@ void DocumentTab::print()
         p.drawImage(QRectF(QPointF((target.width() - sz.width()) / 2, (target.height() - sz.height()) / 2), sz), img);
     }
     QApplication::restoreOverrideCursor();
+}
+
+void DocumentTab::closeSearch()
+{
+    searchBar_->hide();
+    searchEdit_->clear();
+    view_->setFocus();
+}
+
+bool DocumentTab::eventFilter(QObject *o, QEvent *e)
+{
+    if (o == searchEdit_ && e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+        closeSearch();
+        return true;
+    }
+    return QWidget::eventFilter(o, e);
 }
 
 void DocumentTab::showSearch()

@@ -26,6 +26,7 @@ public:
     bool maybeSave();          // false = user cancelled
     void print();
     void showSearch();
+    void closeSearch();                  // hide the search bar, drop the marks, back to the page
     void toggleSidebar();
     void showSignatures();
     void undo();
@@ -47,6 +48,8 @@ signals:
     void titleChanged();
     void statusMessage(const QString &msg);
 
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override;
 private:
     void rebuildOutline();
     void rebuildPages();
