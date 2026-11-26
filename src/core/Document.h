@@ -217,6 +217,8 @@ public:
     void redo();
 
     // Saving. Signed documents are saved incrementally so existing signatures stay valid.
+    // Undo and redo go on across a save, except after an optimised save (which renumbers the objects in memory)
+    // and for signed files (saved incrementally): those are read back from disk with a fresh history.
     void save(const QString &path, bool optimize = false);
     bool hasSignatures();
     void sign(const SignParams &p, const QString &outPath);
@@ -240,6 +242,7 @@ private:
     void *stext(fz_context *c, int page);
     void dropStext(int page = -1);
     void replaceFile(const QString &tmp, const QString &path);
+    void saveAndReload(const QString &path, bool optimize);
 
     mutable std::recursive_mutex mu_;
     pdf_document *doc_ = nullptr;
@@ -252,7 +255,13 @@ private:
     // Noted while the document is locked anyway: asking MuPDF from the GUI, which greys Undo and Redo out
     // after every edit, could wait behind a long render.
     bool canUndo_ = false, canRedo_ = false;
-    void noteHistory(fz_context *c);
+    void noteHistory(fz_context *c, int before = -2);
+    // Saving keeps the document and its undo history open (see save()), so the bytes MuPDF reads from and the
+    // file on disk (data_) may differ: backing_ must outlive doc_.
+    QByteArray backing_;
+    // The position in the undo history that matches the file on disk, before any "Save document" step that
+    // MuPDF records; -1 when an edit made after undoing past it has cut it off.
+    int savedStep_ = 0;
     quint64 gen_ = 0;
 };
 
