@@ -1,4 +1,5 @@
 #include "Theme.h"
+#include <QProxyStyle>
 
 #include <QApplication>
 #include <QPainter>
@@ -40,7 +41,7 @@ void apply(QApplication &app)
 {
     g_mode = Mode(qBound(0, QSettings().value("ui/theme", 0).toInt(), 2));
     g_dark = g_mode == Mode::Dark || (g_mode == Mode::System && systemDark());
-    app.setStyle(QStyleFactory::create("Fusion"));
+    app.setStyle(new PdfableStyle);
     QFont f = app.font();
     if (f.pointSizeF() > 0 && f.pointSizeF() < 9.5) f.setPointSizeF(9.5);
     app.setFont(f);
@@ -94,6 +95,7 @@ QToolButton { border: none; border-radius: 7px; padding: 5px; color: %TEXT%; }
 QToolButton:hover { background: %HOVER%; }
 QToolButton:pressed { background: %SOFT%; }
 QToolButton:checked { background: %SOFT%; }
+QToolButton#menuButton::menu-indicator { image: none; width: 0; }
 QTabWidget::pane { border: none; }
 QTabBar { background: transparent; }
 QTabBar::tab { padding: 7px 14px; margin: 3px 1px 0 1px; border-top-left-radius: 8px; border-top-right-radius: 8px;
@@ -128,6 +130,23 @@ QToolTip { background: %BASE%; color: %TEXT%; border: 1px solid %MID%; padding: 
     qss.replace("%ONACCENT%", g_dark ? "#10141a" : "#ffffff").replace("%HOVER%", hover).replace("%SOFT2%", soft2).replace("%SOFT%", soft);
     qss.replace("%SCROLL%", g_dark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)");
     app.setStyleSheet(qss);
+}
+
+// Fusion, with a visible overflow button where the menu bar or the toolbar is too narrow: Qt's own is
+// 12 pixels wide with a faint dash for an icon, so the entries it holds looked simply gone.
+PdfableStyle::PdfableStyle() : QProxyStyle(QStyleFactory::create("Fusion")) {}
+
+QIcon PdfableStyle::standardIcon(StandardPixmap sp, const QStyleOption *opt, const QWidget *w) const
+{
+    if (sp == SP_ToolBarHorizontalExtensionButton) return Theme::icon("more");
+    if (sp == SP_ToolBarVerticalExtensionButton) return Theme::icon("more-down");
+    return QProxyStyle::standardIcon(sp, opt, w);
+}
+
+int PdfableStyle::pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const
+{
+    if (m == PM_ToolBarExtensionExtent) return 30;
+    return QProxyStyle::pixelMetric(m, opt, w);
 }
 
 // Icons are drawn in a 20x20 box so they stay crisp at any scale factor.
@@ -215,6 +234,14 @@ static void drawIcon(QPainter &p, const QString &n, const QColor &c)
     } else if (n == "find") {
         p.drawEllipse(QPointF(8.8, 8.8), 5.6, 5.6);
         p.drawLine(QPointF(13, 13), QPointF(17.2, 17.2));
+    } else if (n == "more" || n == "more-down") {     // overflow: the entries that did not fit
+        if (n == "more-down") { p.translate(20, 0); p.rotate(90); }
+        poly({{5, 5.5}, {9.5, 10}, {5, 14.5}});
+        poly({{10.5, 5.5}, {15, 10}, {10.5, 14.5}});
+    } else if (n == "menu") {
+        p.drawLine(QPointF(4, 5.5), QPointF(16, 5.5));
+        p.drawLine(QPointF(4, 10), QPointF(16, 10));
+        p.drawLine(QPointF(4, 14.5), QPointF(16, 14.5));
     } else if (n == "sidebar") {
         p.drawRoundedRect(QRectF(2.5, 4, 15, 12), 2, 2);
         p.drawLine(QPointF(7.5, 4), QPointF(7.5, 16));

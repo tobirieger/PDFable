@@ -19,6 +19,10 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QSettings>
+#include <QMenu>
+#include <QToolBar>
+#include <QMenuBar>
 #include <QTabWidget>
 #include <QTabletEvent>
 #include <QToolButton>
@@ -755,6 +759,54 @@ int main(int argc, char **argv)
         QFile::remove(d->path());
         QFile::copy(sample, d->path());               // "LaTeX" rewrote the file
         CHECK(d->reloadIfChanged() && d->pageCount() == 6);
+    }
+
+    // a narrow window: the menus and tools that do not fit sit behind a visible overflow button;
+    // the menu bar can be hidden, its menus then open from the toolbar's menu button
+    {
+        const QSize old = w->size();
+        w->resize(330, old.height());
+        wait(300);
+        auto *mext = w->menuBar()->findChild<QToolButton *>("qt_menubar_ext_button");
+        auto *text = w->findChild<QToolBar *>()->findChild<QToolButton *>("qt_toolbar_ext_button");
+        std::printf("     narrow: menu bar overflow %dx%d, toolbar overflow %dx%d\n", mext ? mext->width() : -1, mext ? mext->height() : -1,
+                    text ? text->width() : -1, text ? text->height() : -1);
+        CHECK(mext && mext->isVisible() && mext->width() >= 24 && !mext->icon().isNull());
+        CHECK(text && text->isVisible() && text->width() >= 24 && !text->icon().isNull());
+        auto iconInk = [](QToolButton *b) {   // average brightness of the icon's drawn pixels
+            QImage im = b->icon().pixmap(20, 20).toImage().convertToFormat(QImage::Format_ARGB32);
+            double sum = 0; int n = 0;
+            for (int y = 0; y < im.height(); ++y)
+                for (int x = 0; x < im.width(); ++x)
+                    if (qAlpha(im.pixel(x, y)) > 128) { sum += qGray(im.pixel(x, y)); ++n; }
+            return n ? sum / n : -1.0;
+        };
+        const double lightInk = iconInk(text);
+        MainWindow::setInterfaceMode(Theme::Mode::Dark);
+        wait(100);
+        const double darkInk = iconInk(text);
+        MainWindow::setInterfaceMode(Theme::Mode::Light);
+        wait(100);
+        std::printf("     overflow icon brightness: light theme %.0f, dark theme %.0f\n", lightInk, darkInk);
+        CHECK(lightInk >= 0 && darkInk > lightInk + 80);
+        auto *menuBtn = w->findChild<QToolButton *>("menuButton");
+        CHECK(menuBtn && !menuBtn->isVisible());          // the menu bar is shown: no second way in
+        MainWindow::setMenuBarShown(false);
+        wait(100);
+        CHECK(!w->menuBar()->isVisible() && menuBtn->isVisible() && menuBtn->menu()->actions().size() == w->menuBar()->actions().size());
+        CHECK(!QSettings().value("ui/menuBar").toBool());
+        int windowShortcuts = 0;                          // shortcuts must keep working without the menu bar
+        for (QAction *a : w->actions()) windowShortcuts += !a->shortcut().isEmpty();
+        std::printf("     %d shortcuts on the window\n", windowShortcuts);
+        CHECK(windowShortcuts > 30);
+        w->toggleFullScreen();
+        w->toggleFullScreen();
+        CHECK(!w->menuBar()->isVisible() && menuBtn->isVisible());   // leaving full screen keeps it hidden
+        MainWindow::setMenuBarShown(true);
+        wait(100);
+        CHECK(w->menuBar()->isVisible() && !menuBtn->isVisible());
+        w->resize(old);
+        wait(200);
     }
 
     // PDF creator: whole files, zipper, hand-arranged pages, images

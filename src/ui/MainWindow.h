@@ -9,6 +9,7 @@
 #include <QTabWidget>
 
 class QActionGroup;
+class QToolButton;
 class QAction;
 class QSpinBox;
 class QLabel;
@@ -94,6 +95,7 @@ public:
     void setTool(Tool t);
     void toggleFullScreen();
     static void setInterfaceMode(Theme::Mode m);
+    static void setMenuBarShown(bool on);   // all windows; the toolbar's menu button stands in for it
     void openCreator();
     static void restoreSession();
 
@@ -136,6 +138,9 @@ private:
     int penIdx_ = 0, hlIdx_ = 0;
     float textSize_ = 12;
     QSpinBox *pageSpin_ = nullptr;
+    QToolButton *menuButton_ = nullptr;
+    QAction *menuButtonAct_ = nullptr, *showMenuBarAct_ = nullptr;
+    void updateMenuButton();
     QLabel *pageCount_ = nullptr, *zoomLabel_ = nullptr;
     QMenu *recentMenu_ = nullptr;
     // The pen and the mouse keep separate tools; the toolbar shows the one of the device in use.
