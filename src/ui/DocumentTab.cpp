@@ -91,7 +91,18 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
     prev->setText("▲");
     next->setText("▼");
     close->setText("✕");
+    // The match count gets a fixed space, wide enough for its longest text, so neither the field nor the
+    // buttons move as the count changes; right-aligned, the digits stay in place too.
     searchInfo_ = new QLabel;
+    searchInfo_->setObjectName("searchInfo");
+    searchInfo_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    {
+        const QFontMetrics fm(searchInfo_->font());
+        int wmax = 0;
+        for (const QString &t : {tr("%1 of %2").arg(8888).arg(8888), tr("%1 matches").arg(8888), tr("No matches")})
+            wmax = qMax(wmax, fm.horizontalAdvance(t));
+        searchInfo_->setFixedWidth(wmax + fm.horizontalAdvance(QLatin1Char(' ')) * 2);
+    }
     sb->addWidget(searchEdit_, 1);
     sb->addWidget(prev);
     sb->addWidget(next);
@@ -217,7 +228,7 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
     connect(close, &QToolButton::clicked, this, &DocumentTab::closeSearch);
     searchEdit_->installEventFilter(this);      // Esc closes the search, like the button
     connect(view_, &PdfView::searchChanged, this, [this](int total, int cur) {
-        searchInfo_->setText(searchEdit_->text().isEmpty() ? QString() : total == 0 ? tr("No matches") : cur > 0 ? tr("%1 of %2").arg(cur).arg(total) : tr("%1 matches").arg(total));
+        searchInfo_->setText(searchEdit_->text().isEmpty() ? QString() : total == 0 ? tr("No matches") : cur > 0 ? tr("%1 of %2").arg(cur).arg(total) : total == 1 ? tr("1 match") : tr("%1 matches").arg(total));
     });
     connect(trust, &QPushButton::clicked, this, [this] {
         QTreeWidgetItem *it = sigTree_->currentItem();
