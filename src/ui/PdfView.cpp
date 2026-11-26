@@ -803,6 +803,11 @@ void PdfView::keyPressEvent(QKeyEvent *e)
     case Qt::Key_End: v->setValue(v->maximum()); return;
     case Qt::Key_Down: scrollBy(QPointF(0, -60 * s_scrollSpeed)); return;
     case Qt::Key_Up: scrollBy(QPointF(0, 60 * s_scrollSpeed)); return;
+    case Qt::Key_Left:
+    case Qt::Key_Right:     // turn the page; a page wider than the view is moved sideways instead, as before
+        if (horizontalScrollBar()->maximum() > 0 || (e->modifiers() & ~Qt::KeypadModifier)) break;
+        gotoPage(qBound(0, currentPage() + (e->key() == Qt::Key_Right ? 1 : -1), doc_->pageCount() - 1), 0, false);
+        return;
     default: break;
     }
     if (e->matches(QKeySequence::Copy)) { copySelection(); return; }

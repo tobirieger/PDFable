@@ -218,6 +218,19 @@ int main(int argc, char **argv)
         w->setTool(Tool::Select);
     }
 
+    // the left and right arrow keys turn the pages
+    {
+        const int at = v->verticalScrollBar()->value();
+        v->gotoPage(2, 100, false);
+        QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier), left(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+        QApplication::sendEvent(v, &right);
+        CHECK(v->currentPage() == 3);
+        QApplication::sendEvent(v, &left);
+        QApplication::sendEvent(v, &left);
+        CHECK(v->currentPage() == 1);
+        v->verticalScrollBar()->setValue(at);
+    }
+
     // handwritten signature: pad -> library -> placement
     {
         SignaturePad pad;
