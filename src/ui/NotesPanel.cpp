@@ -12,6 +12,7 @@
 #include <QTextLayout>
 #include <QStyle>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -313,13 +314,37 @@ NotesPanel::NotesPanel(std::shared_ptr<Document> doc, PdfView *view, QWidget *pa
                 }
         });
     }
-    connect(view_, &PdfView::noteHovered, this, [this](int id) { hoveredId_ = id; updateLit(); });
+    connect(view_, &PdfView::noteHovered, this, [this](int id) {
+        hoveredId_ = id;
+        updateLit();
+        showHoverTip(id);
+    });
     connect(view_, &PdfView::noteSelected, this, [this](int id) {
         selectedId_ = id;
         updateLit();
         relayout();     // the selected note moves to the height of its marking
     });
     connect(view_, &PdfView::notePlaced, this, [this](int id) { placedId_ = id; });
+}
+
+// A sticky note under the pointer while this panel is out of sight: its text next to the icon, as in other readers.
+// It goes when the pointer leaves the icon (QToolTip watches the rectangle).
+void NotesPanel::showHoverTip(int id)
+{
+    if (id == 0 || (active_ && isVisible())) return;
+    for (const MarkupNote &m : std::as_const(notes_)) {
+        if (m.id != id || m.kind != AnnotKind::Note || m.text.isEmpty()) continue;
+        QStringList meta;
+        if (!m.author.isEmpty()) meta << m.author.toHtmlEscaped();
+        if (m.modified.isValid()) meta << QLocale().toString(m.modified.toLocalTime().date(), QLocale::ShortFormat);
+        QString html = QStringLiteral("<div style='max-width:320px'>");
+        if (!meta.isEmpty()) html += QStringLiteral("<b>%1</b><br>").arg(meta.join(QStringLiteral(" · ")));
+        html += m.text.toHtmlEscaped().replace('\n', QStringLiteral("<br>")) + QStringLiteral("</div>");
+        const QRectF icon(view_->pageToView(m.page, m.rect.topLeft()), view_->pageToView(m.page, m.rect.bottomRight()));
+        QWidget *vp = view_->viewport();
+        QToolTip::showText(vp->mapToGlobal(icon.topRight().toPoint() + QPoint(6, 0)), html, vp, icon.toAlignedRect().adjusted(-2, -2, 2, 2));
+        return;
+    }
 }
 
 int NotesPanel::noteCount() const

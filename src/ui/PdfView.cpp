@@ -1330,9 +1330,12 @@ void PdfView::hover(QPointF pos, bool pen)
     }
     int pg = pageAt(pos);
     int note = 0;       // a marking under the pointer lights up its note in the Notes sidebar
-    if (pg >= 0 && noteLinksVisible_)
+    // With the sidebar's Notes tab out of sight a sticky note under the pointer is still reported: the sidebar
+    // then shows its text next to the icon (markings stay quiet, as they are often large and under the text read).
+    if (pg >= 0)
         for (const NoteLink &nl : std::as_const(noteLinks_))
             for (const QPolygonF &q : nl.quads) {
+                if (!noteLinksVisible_ && nl.kind != AnnotKind::Note) break;
                 if (nl.page != pg || !q.containsPoint(toPage(pg, pos), Qt::OddEvenFill)) continue;
                 bool on = nl.kind != AnnotKind::Ink;     // a stroke: where a click would select it, not its whole box
                 for (const InkAnnot &ia : on ? QVector<InkAnnot>() : inksFor(pg))
