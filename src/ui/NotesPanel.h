@@ -18,6 +18,7 @@ class NoteCard : public QFrame {
 public:
     NoteCard(const ink::MarkupNote &n, const QString &excerpt, QWidget *parent);
     void setNote(const ink::MarkupNote &n);
+    void setExcerpt(const QString &excerpt);    // the quoted text of the marking (empty: none)
     const ink::MarkupNote &note() const { return note_; }
     void startEditing();
     bool isEditing() const { return editing_; }
@@ -73,7 +74,8 @@ private:
     PdfView *view_;
     QVector<ink::MarkupNote> notes_;     // markings that have a note (plus the one being written)
     QHash<int, NoteCard *> cards_;
-    QHash<int, QString> excerpts_;
+    struct Excerpt { int page; QVector<QPolygonF> quads; QString text; };
+    QHash<int, Excerpt> excerpts_;       // quoted text of each marking, with where it was read
     QHash<int, QPair<QPointF, qreal>> lineYs_;   // per stroke: its anchor and the height its line runs at
     QVector<QPair<qreal, NoteCard *>> placed_;   // anchor y in panel coordinates, card
     int editingId_ = 0, hoveredId_ = 0, selectedId_ = 0;

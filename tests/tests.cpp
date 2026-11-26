@@ -1100,6 +1100,78 @@ int main(int argc, char **argv)
         nt->window()->grab().save(out + "/9d_sticky.png");
     }
 
+    // two taps with the pen on a sticky note open it even when the pen wobbles a little between down and up, and
+    // the note stays where it is; a real drag still moves it
+    {
+        DocumentTab *nt = w->currentTab();
+        PdfView *nv = nt->view();
+        Document *nd = nt->doc();
+        NotesPanel *np = nt->notesPanel();
+        w->setTool(Tool::Select);
+        nv->gotoPage(1, 150, false);
+        wait(200);
+        const int jid = nd->addNote(1, QPointF(470, 250), QColor(255, 235, 60));
+        nd->setAnnotContents(1, jid, "wobble");
+        wait(300);
+        nv->selectAnnot(1, 0);
+        const QPointF on = nv->pageToView(1, QPointF(470, 250));
+        auto rectOf = [&] { for (const AnnotInfo &a : nd->annots(1)) if (a.id == jid) return a.rect; return QRectF(); };
+        const QRectF before = rectOf();
+        bool opened = false;
+        auto cn = QObject::connect(nv, &PdfView::noteRequested, [&](int, int id) { opened = opened || id == jid; });
+        qint64 t = 60000;
+        for (int tap = 0; tap < 2; ++tap, t += 150) {
+            nv->testPointer(0, on, 0.5f, t, true);
+            nv->testPointer(1, on + QPointF(1.5, 1), 0.55f, t + 20, true);
+            nv->testPointer(2, on + QPointF(1.5, 1), 0, t + 40, true);
+        }
+        QObject::disconnect(cn);
+        wait(100);
+        CHECK(opened && rectOf() == before);
+        if (np->card(jid) && np->card(jid)->isEditing()) {
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(np->card(jid)->findChild<QPlainTextEdit *>(), &esc);
+        }
+        wait(200);
+        nv->testPointer(0, on, -1, t + 1000);
+        nv->testPointer(1, on + QPointF(30, 20), -1, t + 1020);
+        nv->testPointer(2, on + QPointF(30, 20), -1, t + 1040);
+        CHECK(rectOf().topLeft() != before.topLeft());
+        nd->removeAnnots(1, {jid});
+        wait(300);
+    }
+
+    // an optimised save renumbers the objects, so an id may afterwards name another marking: its card must quote
+    // the text of the marking it now stands for, not what was read for the id before
+    {
+        DocumentTab *nt = w->currentTab();
+        Document *nd = nt->doc();
+        NotesPanel *np = nt->notesPanel();
+        const QVector<QPolygonF> q1 = nd->search(2, "the"), q2 = nd->search(2, "of");
+        CHECK(!q1.isEmpty() && !q2.isEmpty());
+        if (!q1.isEmpty() && !q2.isEmpty()) {
+            const int h1 = nd->addMarkup(2, AnnotKind::Highlight, {q1[0]}, QColor(255, 235, 60));
+            nd->setAnnotContents(2, h1, "first");
+            const int h2 = nd->addMarkup(2, AnnotKind::Highlight, {q2[0]}, QColor(255, 235, 60));
+            nd->setAnnotContents(2, h2, "second");
+            wait(400);
+            nd->removeAnnots(2, {h1});
+            wait(400);
+            nd->save(nd->path(), true);
+            wait(400);
+            MarkupNote second;
+            for (const MarkupNote &m : nd->markups()) if (m.text == "second") second = m;
+            std::printf("     second marking: id %d -> %d (first had %d)\n", h2, second.id, h1);
+            const QString quoted = nd->textInQuads(second.page, second.quads);
+            NoteCard *c = np->card(second.id);
+            bool right = false;
+            for (QLabel *l : c ? c->findChildren<QLabel *>() : QList<QLabel *>()) right = right || l->text() == QStringLiteral("“%1”").arg(quoted);
+            CHECK(second.id > 0 && !quoted.isEmpty() && right);
+            nd->removeAnnots(second.page, {second.id});
+            wait(300);
+        }
+    }
+
     // notes on pen strokes: a double-click opens the note of a stroke; it stays with the stroke and goes with it
     {
         DocumentTab *nt = w->currentTab();

@@ -32,6 +32,7 @@
 using namespace ink;
 
 static const qreal kGap = 12, kMargin = 12;
+static const qreal kTapSlop = 5;    // view pixels a click or tap may wander and still be one
 
 static bool isMarkup(AnnotKind k) { return k == AnnotKind::Highlight || k == AnnotKind::Underline || k == AnnotKind::StrikeOut; }
 static bool hasHandles(AnnotKind k) { return k == AnnotKind::Ink || k == AnnotKind::FreeText || k == AnnotKind::Stamp; }   // can be resized
@@ -1196,7 +1197,7 @@ void PdfView::move(const Ptr &e)
         break;
     }
     case Drag::LinkClick:
-        if (QLineF(pressPos_, e.pos).length() < 5) break;
+        if (QLineF(pressPos_, e.pos).length() < kTapSlop) break;
         drag_ = Drag::TextSel;       // dragging over a link selects its text instead
         selPage_ = pageAt(pressPos_);
         selA_ = toPage(selPage_, pressPos_);
@@ -1209,6 +1210,10 @@ void PdfView::move(const Ptr &e)
         }
         break;
     case Drag::AnnotMove: {
+        // A tap wobbles, the pen's above all: the annotation only moves once the pointer has gone further than
+        // that, as a click on a text marking allows. Otherwise a tap moved it a fraction of a point, an edit to
+        // undo, and two taps on a sticky note or a stroke never counted as a double tap.
+        if (annDragRect_ == ann_.rect && QLineF(pressPos_, e.pos).length() < kTapSlop) break;
         QPointF pt = toPage(annPage_, e.pos);
         annDragRect_ = ann_.rect.translated(pt - annGrab_);
         viewport()->update();
@@ -1254,7 +1259,7 @@ void PdfView::release(const Ptr &e)
     case Drag::TextSel:
         if (selQuads_.isEmpty()) {
             selPage_ = -1;
-            if (pressMarkupId_ && QLineF(pressPos_, e.pos).length() < 5 && !isPreview_) clickMarkup(pressMarkupPage_, pressMarkupId_, e);
+            if (pressMarkupId_ && QLineF(pressPos_, e.pos).length() < kTapSlop && !isPreview_) clickMarkup(pressMarkupPage_, pressMarkupId_, e);
         } else
             showSelBar(e.pos);
         pressMarkupId_ = 0;

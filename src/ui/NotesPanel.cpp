@@ -59,9 +59,7 @@ NoteCard::NoteCard(const MarkupNote &n, const QString &excerpt, QWidget *parent)
     f.setPointSizeF(f.pointSizeF() * 0.9);
     excerpt_->setFont(f);
     excerpt_->setForegroundRole(QPalette::PlaceholderText);
-    QString ex = excerpt.size() > 140 ? excerpt.left(137) + QStringLiteral("…") : excerpt;
-    excerpt_->setText(ex.isEmpty() ? QString() : QStringLiteral("“%1”").arg(ex));
-    excerpt_->setVisible(!ex.isEmpty());
+    setExcerpt(excerpt);
     edit_ = new QPlainTextEdit(this);
     edit_->setPlaceholderText(tr("Type a note…  (Ctrl+Enter to finish, Esc to cancel)"));
     edit_->setFrameShape(QFrame::NoFrame);
@@ -105,6 +103,16 @@ void NoteCard::setNote(const MarkupNote &n)
         fitted_ = 0;
     }
     update();
+}
+
+void NoteCard::setExcerpt(const QString &excerpt)
+{
+    const QString ex = excerpt.size() > 140 ? excerpt.left(137) + QStringLiteral("…") : excerpt;
+    const QString text = ex.isEmpty() ? QString() : QStringLiteral("“%1”").arg(ex);
+    if (text == excerpt_->text() && excerpt_->isHidden() == text.isEmpty()) return;
+    excerpt_->setText(text);
+    excerpt_->setVisible(!text.isEmpty());
+    fitted_ = 0;        // its height may have changed
 }
 
 void NoteCard::fitWidth(int w)
@@ -268,9 +276,12 @@ int NotesPanel::noteCount() const
 QString NotesPanel::excerptFor(const MarkupNote &n)
 {
     if (n.kind == AnnotKind::Note || n.kind == AnnotKind::Ink) return QString();     // these mark no text
+    // Kept with the page and the quads it was read from: ids are object numbers, which an optimised save renumbers
+    // (and undo can bring back), so an id alone may name another marking afterwards, with other text.
     auto it = excerpts_.find(n.id);
-    if (it == excerpts_.end()) it = excerpts_.insert(n.id, doc_->textInQuads(n.page, n.quads));
-    return it.value();
+    if (it == excerpts_.end() || it->page != n.page || it->quads != n.quads)
+        it = excerpts_.insert(n.id, {n.page, n.quads, doc_->textInQuads(n.page, n.quads)});
+    return it->text;
 }
 
 void NotesPanel::reload()
@@ -327,8 +338,10 @@ void NotesPanel::reload()
                 } catch (const PdfError &) {}
                 reload();
             });
-        } else if (!c->isEditing())
+        } else if (!c->isEditing()) {
             c->setNote(m);
+            c->setExcerpt(excerptFor(m));
+        }
     }
     for (auto it = cards_.begin(); it != cards_.end();) {
         if (!keep.contains(it.key()) && !it.value()->isEditing()) {
