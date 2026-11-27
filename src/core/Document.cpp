@@ -134,6 +134,8 @@ void Document::createEmpty()
     std::lock_guard<std::recursive_mutex> lk(mu_);
     close();
     data_.clear();
+    backing_.clear();
+    savedStep_ = 0;
     fzrun([&](fz_context *c) { doc_ = pdf_create_document(c); pdf_enable_journal(c, doc_); });
     loadSizes();
 }
@@ -142,10 +144,11 @@ void Document::loadBytes(const QByteArray &bytes)
 {
     std::lock_guard<std::recursive_mutex> lk(mu_);
     close();
-    data_ = bytes;   // MuPDF reads lazily from this buffer; it must outlive doc_
+    data_ = backing_ = bytes;   // MuPDF reads lazily from backing_; it must outlive doc_
+    savedStep_ = 0;
     needsPw_ = false;
     fzrun([&](fz_context *c) {
-        fz_stream *stm = fz_open_memory(c, reinterpret_cast<const unsigned char *>(data_.constData()), size_t(data_.size()));
+        fz_stream *stm = fz_open_memory(c, reinterpret_cast<const unsigned char *>(backing_.constData()), size_t(backing_.size()));
         fz_try(c) doc_ = pdf_open_document_with_stream(c, stm);
         fz_always(c) fz_drop_stream(c, stm);
         fz_catch(c) fz_rethrow(c);
@@ -261,6 +264,8 @@ template <class F> void Document::pageOp(int page, const char *name, F &&f)
         fzrun([&](fz_context *c) {
             pdf_page *pg = nullptr;
             fz_var(pg);
+            int steps = 0;
+            const int before = pdf_undoredo_state(c, doc_, &steps);
             pdf_begin_operation(c, doc_, name);
             fz_try(c)
             {
@@ -268,7 +273,7 @@ template <class F> void Document::pageOp(int page, const char *name, F &&f)
                 f(c, pg);
                 pdf_update_page(c, pg);
                 pdf_end_operation(c, doc_);
-                noteHistory(c);
+                noteHistory(c, before);
             }
             fz_always(c) fz_drop_page(c, reinterpret_cast<fz_page *>(pg));
             fz_catch(c)
@@ -286,12 +291,14 @@ template <class F> void Document::docOp(const char *name, F &&f)
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         fzrun([&](fz_context *c) {
+            int steps = 0;
+            const int before = pdf_undoredo_state(c, doc_, &steps);
             pdf_begin_operation(c, doc_, name);
             fz_try(c)
             {
                 f(c);
                 pdf_end_operation(c, doc_);
-                noteHistory(c);
+                noteHistory(c, before);
             }
             fz_catch(c)
             {
@@ -1401,10 +1408,28 @@ void Document::assemble(const QVector<AssemblyItem> &items, const QString &outPa
     });
 }
 
-void Document::noteHistory(fz_context *c)
+// MuPDF wraps a save in an operation of its own ("Save document"). In 1.28 it leaves no step behind, but should
+// it settle something in the document (stream lengths, the file id) it becomes one: that changes nothing that can
+// be seen, so undo and redo step over it, and it does not count as something to undo.
+static bool isSaveStep(fz_context *c, pdf_document *doc, int index)
 {
-    canUndo_ = pdf_can_undo(c, doc_);
-    canRedo_ = pdf_can_redo(c, doc_);
+    const char *t = index >= 0 ? pdf_undoredo_step(c, doc, index) : nullptr;
+    return t && std::strcmp(t, "Save document") == 0;
+}
+
+void Document::noteHistory(fz_context *c, int before)
+{
+    int steps = 0;
+    const int pos = pdf_undoredo_state(c, doc_, &steps);
+    // An edit made after undoing past the saved state cuts that state off the history (pos is one past before;
+    // an edit that changed nothing leaves pos where it was).
+    if (before > -2 && pos != before && pos <= savedStep_) savedStep_ = -1;
+    if (savedStep_ > steps) savedStep_ = -1;
+    canUndo_ = canRedo_ = false;
+    for (int i = 0; i < steps; ++i) {
+        if (isSaveStep(c, doc_, i)) continue;
+        (i < pos ? canUndo_ : canRedo_) = true;
+    }
 }
 void Document::undo()
 {
@@ -1412,12 +1437,19 @@ void Document::undo()
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         fzrun([&](fz_context *c) {
-            // canUndo() may be out of date (see redo()): then there is nothing to do but say so
-            none = !pdf_can_undo(c, doc_);
-            if (!none) pdf_undo(c, doc_);
-            noteHistory(c);
             int steps = 0;
-            clean = pdf_undoredo_state(c, doc_, &steps) == 0;
+            auto pos = [&] { return pdf_undoredo_state(c, doc_, &steps); };
+            auto skipSaves = [&] { while (pos() > 0 && isSaveStep(c, doc_, pos() - 1)) pdf_undo(c, doc_); };
+            // canUndo() may be out of date (see redo()): then there is nothing to do but say so
+            noteHistory(c);
+            none = !canUndo_;
+            if (!none) {
+                skipSaves();
+                pdf_undo(c, doc_);
+                skipSaves();
+            }
+            noteHistory(c);
+            clean = pos() == savedStep_;
         });
     }
     if (none) {
@@ -1425,22 +1457,29 @@ void Document::undo()
         return;
     }
     touched(-1, true);
-    // The undo history starts afresh whenever the file is loaded or saved, and every edit is a step in it (MuPDF
-    // refuses changes outside an operation), so its start is the file on disk: back there, there is nothing to save.
+    // Every edit is a step in the history (MuPDF refuses changes outside an operation), and the step that matches
+    // the file on disk is noted when it is loaded or saved: back there, there is nothing to save.
     if (clean) setModified(false);
 }
 void Document::redo()
 {
-    bool none = false;
+    bool none = false, clean = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         fzrun([&](fz_context *c) {
+            int steps = 0;
+            auto pos = [&] { return pdf_undoredo_state(c, doc_, &steps); };
             // canRedo() is noted after every edit, undo and redo, but MuPDF also drops the redo steps by itself when
             // it changes the file on its own after an undo (new appearances of fields or annotations, say). Then the
             // menu still offered Redo; now it is greyed out instead.
-            none = !pdf_can_redo(c, doc_);
-            if (!none) pdf_redo(c, doc_);
             noteHistory(c);
+            none = !canRedo_;
+            if (!none) {
+                while (pdf_can_redo(c, doc_) && isSaveStep(c, doc_, pos())) pdf_redo(c, doc_);
+                pdf_redo(c, doc_);
+            }
+            noteHistory(c);
+            clean = pos() == savedStep_;
         });
     }
     if (none) {
@@ -1448,6 +1487,7 @@ void Document::redo()
         return;
     }
     touched(-1, true);
+    if (clean) setModified(false);
 }
 
 // ---------------------------------------------------------------- saving
@@ -1479,6 +1519,41 @@ bool Document::hasSignatures()
 }
 
 void Document::save(const QString &path, bool optimize)
+{
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        if (optimize || hasSignatures()) {
+            saveAndReload(path, optimize);
+            return;
+        }
+        // Write the file and keep the open document with its undo history. Garbage collection of level 1 only
+        // leaves unused objects out of the file; it does not renumber the objects in memory, which would leave
+        // the history pointing at the wrong ones (that is why an optimised save reads the file back instead).
+        QString tmp = path + QStringLiteral(".tmp~");
+        fzrun([&](fz_context *c) {
+            pdf_write_options o = pdf_default_write_options;
+            o.do_garbage = 1;
+            o.do_compress = 1;
+            o.do_compress_images = 1;
+            o.do_compress_fonts = 1;
+            pdf_save_document(c, doc_, tmp.toUtf8().constData(), &o);
+            int steps = 0;
+            savedStep_ = pdf_undoredo_state(c, doc_, &steps);
+            while (savedStep_ > 0 && isSaveStep(c, doc_, savedStep_ - 1)) --savedStep_;
+            noteHistory(c);
+        });
+        replaceFile(tmp, path);
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) throw PdfError(tr("Cannot re-open %1").arg(path));
+        data_ = f.readAll();         // the file on disk, for reloadIfChanged(); MuPDF still reads from backing_
+        path_ = QFileInfo(path).absoluteFilePath();
+        setModified(false);
+    }
+    emit historyChanged();
+    emit saved();
+}
+
+void Document::saveAndReload(const QString &path, bool optimize)
 {
     bool same = false;
     {
@@ -1587,7 +1662,7 @@ void Document::sign(const SignParams &p, const QString &outPath)
         if (modified_ || data_.isEmpty() || !clean) {
             if (!clean && hasSignatures())
                 throw PdfError(tr("This file is damaged; signing it would invalidate its existing signatures."));
-            save(outPath);
+            saveAndReload(outPath, false);   // the incremental update needs the document read from the file
         }
         if (p.page < 0 || p.page >= sizes_.size()) throw PdfError(tr("Invalid page"));
 

@@ -188,8 +188,8 @@ Automated headless test in `tests/tests.cpp` (`./dev.sh test`). Pen and touch in
 Windows.
 
 Known gaps: text selection is per page; form filling is not
-implemented; extracting or merging pages keeps ink and comments but drops links and form fields; saving
-resets the undo history.
+implemented; extracting or merging pages keeps ink and comments but drops links and form fields; an
+optimised save, and saving a signed file, reset the undo history.
 
 ## Shortcuts
 

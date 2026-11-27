@@ -654,14 +654,60 @@ int main(int argc, char **argv)
     CHECK(hitsBefore > 0 && v->searchCount() == hitsBefore);
     v->setSearch(QString());
     CHECK(!d->isModified());
-    // a fresh history: undo and redo asked for anyway (Undo/Redo out of date) do nothing and change nothing
+    // the undo history goes on across a save (#2): the file on disk is one step in it
     {
-        int told = 0;
-        auto cn = QObject::connect(d, &Document::historyChanged, [&] { ++told; });
+        CHECK(d->canUndo());                       // the edits made before the save can still be undone
+        QFile disk(d->path());
+        disk.open(QIODevice::ReadOnly);
+        const QByteArray saved = disk.readAll();
+        disk.close();
+        const int inks = d->inkAnnots(0).size();
+        InkData s;
+        s.strokes = {InkStroke{{QPointF(120, 700), QPointF(320, 700)}, {}}};
+        d->addInk(0, s);
+        CHECK(d->isModified() && d->inkAnnots(0).size() == inks + 1);
+        d->undo();                                 // back at the saved state: nothing to save
+        CHECK(!d->isModified() && d->inkAnnots(0).size() == inks);
+        d->undo();                                 // past it: an edit from before the save is undone
+        CHECK(d->isModified());
+        d->redo();
+        CHECK(!d->isModified() && d->inkAnnots(0).size() == inks);
+        d->redo();
+        CHECK(d->isModified() && d->inkAnnots(0).size() == inks + 1 && !d->canRedo());
+        d->undo();
+        CHECK(!d->isModified());
+        disk.open(QIODevice::ReadOnly);
+        CHECK(disk.readAll() == saved && !d->reloadIfChanged());   // undo and redo did not touch the file
+        disk.close();
+        // an edit made after undoing past the saved state cuts that state off: nothing matches the file any more
+        d->undo();
+        d->addInk(0, s);
+        d->undo();
+        CHECK(d->isModified());
+        d->redo();
+        CHECK(d->isModified());
+        CHECK(tab->save() && !d->isModified() && d->canUndo());
         d->undo();
         d->redo();
+        CHECK(!d->isModified());
+        // an optimised save renumbers the objects in memory: it reads the file back with a fresh history
+        d->save(d->path(), true);
+        CHECK(!d->isModified() && !d->canUndo() && !d->canRedo());
+        d->removeAnnots(0, {d->inkAnnots(0).last().id});
+        CHECK(tab->save() && d->inkAnnots(0).size() == inks);
+        // saving a document without edits leaves nothing to undo (MuPDF's own "Save document" step is skipped)
+        Document fresh;
+        QFile::remove(out + "/fresh.pdf");
+        QFile::copy(sample, out + "/fresh.pdf");
+        fresh.open(out + "/fresh.pdf");
+        fresh.save(out + "/fresh.pdf");
+        CHECK(!fresh.canUndo() && !fresh.canRedo() && !fresh.isModified());
+        int told = 0;
+        auto cn = QObject::connect(&fresh, &Document::historyChanged, [&] { ++told; });
+        fresh.undo();                              // asked for anyway (Undo out of date): does nothing
+        fresh.redo();
         QObject::disconnect(cn);
-        CHECK(told == 2 && !d->isModified() && !d->canUndo() && !d->canRedo());
+        CHECK(told == 2 && !fresh.isModified() && fresh.pageCount() == d->pageCount());
     }
     CHECK(d->inkAnnots(0).size() == 4);
     CHECK(!d->inkAnnots(0)[0].data.strokes[0].w.isEmpty());
