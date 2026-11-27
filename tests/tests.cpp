@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDir>
+#include <QSet>
 #include <QLabel>
 #include <QScrollBar>
 #include <QElapsedTimer>
@@ -339,6 +340,33 @@ int main(int argc, char **argv)
         QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
         QApplication::sendEvent(field, &esc);
         CHECK(!field->isVisible() && v->searchCount() == 0 && v->hasFocus());
+        // the match count has a fixed space: the field and the buttons stay where they are as it changes
+        {
+            tab->showSearch();
+            auto *info = tab->findChild<QLabel *>("searchInfo");
+            QToolButton *down = nullptr;
+            for (QToolButton *b : tab->findChildren<QToolButton *>()) if (b->text() == QString::fromUtf8("▼")) down = b;
+            QStringList seen;
+            QSet<int> fieldW, downX, infoX;
+            for (const char *term : {"kinetic", "Line", "zzqqxx", "Line 1 of page 3"}) {
+                field->setText(term);
+                finish();
+                wait(50);
+                for (int i = 0; i < 2; ++i) {      // and after stepping to the next hit ("1 of n" -> "2 of n")
+                    seen << info->text();
+                    fieldW << field->width();
+                    downX << down->x();
+                    infoX << info->x();
+                    v->findNext(true);
+                    wait(30);
+                }
+            }
+            std::printf("     search counts %s: field widths %lld, button positions %lld\n", qPrintable(seen.join(" | ")),
+                        (long long)fieldW.size(), (long long)downX.size());
+            CHECK(down && fieldW.size() == 1 && downX.size() == 1 && infoX.size() == 1);
+            CHECK(info->fontMetrics().horizontalAdvance(info->text()) <= info->width());
+            QApplication::sendEvent(field, &esc);
+        }
         bool previous = false;                              // Shift+F3
         for (QAction *a : w->findChildren<QAction *>()) previous = previous || a->shortcut() == QKeySequence(QKeySequence::FindPrevious);
         CHECK(previous);
