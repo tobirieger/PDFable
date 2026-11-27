@@ -5,6 +5,10 @@
 #include "NotesPanel.h"
 #include "Theme.h"
 #include <QPlainTextEdit>
+#include <QSettings>
+#include <QPushButton>
+#include <QDialogButtonBox>
+#include <QDialog>
 #include <QApplication>
 #include <QClipboard>
 #include <QDir>
@@ -1612,6 +1616,35 @@ int main(int argc, char **argv)
         wait(1500);
         std::printf("     previews: %d of %d, %d after the window grew\n", small, list->count(), previews());
         CHECK(small > 0 && small < list->count() && previews() == list->count());
+    }
+
+    // preferences: grouped under headings, and "Restore defaults" sets them back
+    {
+        QStringList headings;
+        double speedAfterRestore = -1, speedChanged = -1;
+        bool found = false;
+        QTimer::singleShot(300, [&] {
+            QDialog *pd = nullptr;
+            for (QWidget *top : QApplication::topLevelWidgets())
+                if (top->objectName() == "preferencesDialog" && top->isVisible()) pd = qobject_cast<QDialog *>(top);
+            if (!pd) return;
+            found = true;
+            for (QLabel *l : pd->findChildren<QLabel *>())
+                if (l->font().bold()) headings << l->text();
+            auto *speed = pd->findChild<SizeSlider *>("scrollSpeed");
+            speed->setValue(1000);
+            speedChanged = PdfView::scrollSpeed();
+            auto *bb = pd->findChild<QDialogButtonBox *>();
+            bb->button(QDialogButtonBox::RestoreDefaults)->click();
+            speedAfterRestore = PdfView::scrollSpeed();
+            pd->accept();
+        });
+        w->showPreferences();
+        std::printf("     preferences: %s; speed %.2f -> %.2f after Restore defaults\n", qPrintable(headings.join(" | ")), speedChanged, speedAfterRestore);
+        CHECK(found);
+        CHECK(headings == QStringList({"Appearance", "Navigation", "Pen, mouse and finger", "Notes"}));
+        CHECK(speedChanged > 1.9 && std::fabs(speedAfterRestore - 0.8) < 1e-9);
+        CHECK(std::fabs(QSettings().value("view/scrollSpeed").toDouble() - 0.8) < 1e-9);
     }
 
 #ifdef PDFABLE_SIGNING

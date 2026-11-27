@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QPushButton>
 #include <QElapsedTimer>
 #include <QFormLayout>
 #include <QWheelEvent>
@@ -557,14 +558,55 @@ void MainWindow::showPreferences()
 {
     QDialog d(this);
     d.setWindowTitle(tr("Preferences"));
+    d.setObjectName("preferencesDialog");
     auto *form = new QFormLayout(&d);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setLabelAlignment(Qt::AlignLeft);
+    // A bold heading per group; every group but the first gets some space above it.
+    auto section = [&](const QString &title) {
+        auto *h = new QLabel(title);
+        QFont f = h->font();
+        f.setBold(true);
+        h->setFont(f);
+        if (form->rowCount() > 0) h->setContentsMargins(0, 14, 0, 0);
+        form->addRow(h);
+    };
+    auto hint = [&](const QString &text) {
+        auto *l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setForegroundRole(QPalette::PlaceholderText);
+        form->addRow(l);
+    };
+    std::vector<std::function<void()>> defaults;   // "Restore defaults" runs these
+
+    section(tr("Appearance"));
+    auto *ui = new QComboBox;
+    ui->setObjectName("interfaceMode");
+    ui->addItems({tr("Follow Windows"), tr("Light"), tr("Dark")});
+    ui->setCurrentIndex(int(Theme::mode()));
+    ui->setToolTip(tr("Ctrl+Alt+D switches between light and dark."));
+    connect(ui, &QComboBox::currentIndexChanged, this, [](int i) { MainWindow::setInterfaceMode(Theme::Mode(i)); });
+    form->addRow(tr("Interface"), ui);
+    defaults.push_back([ui] { ui->setCurrentIndex(int(Theme::Mode::System)); });
+    auto *theme = new QComboBox;
+    theme->setObjectName("pageTheme");
+    theme->addItems({tr("Light"), tr("Sepia"), tr("Dark")});
+    theme->setCurrentIndex(int(PageColors::theme()));
+    theme->setToolTip(tr("Ctrl+I switches between light and dark pages."));
+    connect(theme, &QComboBox::currentIndexChanged, this, [this](int i) { setPageTheme(PageTheme(i)); });
+    form->addRow(tr("Pages"), theme);
+    defaults.push_back([theme] { theme->setCurrentIndex(int(PageTheme::Light)); });
+
+    section(tr("Navigation"));
     auto *speed = new SizeSlider;
+    speed->setObjectName("scrollSpeed");
     auto *speedLabel = new QLabel;
     speedLabel->setMinimumWidth(48);
     auto toPos = [](double f) { return int(std::lround((f - 0.3) / 1.7 * 1000)); };
     auto toSpeed = [](int pos) { return 0.3 + pos / 1000.0 * 1.7; };
     speed->setValue(toPos(PdfView::scrollSpeed()));
     speedLabel->setText(QString("%1 %").arg(qRound(PdfView::scrollSpeed() * 100)));
+    speed->setToolTip(tr("How far the mouse wheel and the arrow keys move the page."));
     connect(speed, &SizeSlider::valueChanged, &d, [=](int pos) {
         double f = std::round(toSpeed(pos) * 20) / 20;
         PdfView::setScrollSpeed(f);
@@ -574,18 +616,16 @@ void MainWindow::showPreferences()
     auto *row = new QHBoxLayout;
     row->addWidget(speed);
     row->addWidget(speedLabel);
-    form->addRow(tr("Scroll speed (wheel, keys)"), row);
-    auto *theme = new QComboBox;
-    theme->addItems({tr("Light"), tr("Sepia"), tr("Dark")});
-    theme->setCurrentIndex(int(PageColors::theme()));
-    connect(theme, &QComboBox::currentIndexChanged, this, [this](int i) { setPageTheme(PageTheme(i)); });
-    form->addRow(tr("Page theme"), theme);
-    auto *ui = new QComboBox;
-    ui->addItems({tr("Follow Windows"), tr("Light"), tr("Dark")});
-    ui->setCurrentIndex(int(Theme::mode()));
-    connect(ui, &QComboBox::currentIndexChanged, this, [](int i) { MainWindow::setInterfaceMode(Theme::Mode(i)); });
-    form->addRow(tr("Interface (Ctrl+Alt+D)"), ui);
+    form->addRow(tr("Scroll speed"), row);
+    defaults.push_back([=] { speed->setValue(toPos(0.8)); });
+
+    section(tr("Pen, mouse and finger"));
+    hint(tr("The pen and the mouse each keep their own tool: tap a toolbar button with the pen to set the pen's "
+            "tool, click it with the mouse to set the mouse's tool. A finger always pans and zooms."));
+
+    section(tr("Notes"));
     auto *noteMode = new QComboBox;
+    noteMode->setObjectName("noteMode");
     noteMode->addItems({tr("Right after marking (colour bar or Ctrl+H)"), tr("Only when I double-click the marking")});
     noteMode->setCurrentIndex(PdfView::noteAfterMarking() ? 0 : 1);
     noteMode->setToolTip(tr("Double-clicking a marking always opens its note."));
@@ -594,7 +634,8 @@ void MainWindow::showPreferences()
         QSettings().setValue("notes/afterMarking", i == 0);
     });
     form->addRow(tr("Open the note editor"), noteMode);
-    auto *author = new QLineEdit(Document::author());
+    defaults.push_back([noteMode] { noteMode->setCurrentIndex(0); });
+    auto *author = new QLineEdit(Document::author());   // personal: Restore defaults leaves it alone
     author->setPlaceholderText(tr("No name"));
     author->setToolTip(tr("Stored in the PDF with every note you write, and shown on the note, as other PDF readers do."));
     connect(author, &QLineEdit::textChanged, this, [](const QString &name) {
@@ -602,13 +643,16 @@ void MainWindow::showPreferences()
         QSettings().setValue("notes/author", Document::author());
     });
     form->addRow(tr("Your name on notes"), author);
-    auto *note = new QLabel(tr("Pen, mouse and finger: the pen and the mouse each keep their own tool. Tap a toolbar "
-                               "button with the pen to set the pen's tool, click it with the mouse to set the mouse's "
-                               "tool. A finger always pans and zooms."));
-    note->setWordWrap(true);
-    form->addRow(note);
-    auto *bb = new QDialogButtonBox(QDialogButtonBox::Close);
+
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::RestoreDefaults | QDialogButtonBox::Close);
+    bb->button(QDialogButtonBox::RestoreDefaults)->setAutoDefault(false);
+    bb->button(QDialogButtonBox::Close)->setDefault(true);
+    bb->button(QDialogButtonBox::RestoreDefaults)->setToolTip(tr("Set the preferences on this page back to how PDFable comes (your name stays)."));
+    connect(bb->button(QDialogButtonBox::RestoreDefaults), &QAbstractButton::clicked, &d, [defaults] { for (const auto &f : defaults) f(); });
     connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::accept);
+    auto *gap = new QWidget;
+    gap->setFixedHeight(6);
+    form->addRow(gap);
     form->addRow(bb);
     d.exec();
 }

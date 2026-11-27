@@ -96,6 +96,7 @@ public:
     static void setInterfaceMode(Theme::Mode m);
     void openCreator();
     static void restoreSession();
+    void showPreferences();
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -142,7 +143,6 @@ private:
     Tool tool_ = Tool::Select, penTool_ = Tool::Pen, mouseTool_ = Tool::Select;
     bool activePen_ = false;
     void onDeviceUsed(bool pen);
-    void showPreferences();
     void setPageTheme(PageTheme t);
     PenStyle pen_, hl_{QColor(255, 235, 60), 12.f};
 };
