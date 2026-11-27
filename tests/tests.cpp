@@ -25,6 +25,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTimer>
+#include <QWheelEvent>
 #include <cmath>
 #include <functional>
 #include <cstdio>
@@ -1502,6 +1503,28 @@ int main(int argc, char **argv)
         CHECK(again.fields(0)[0].value == "Erika Mustermann" && again.fields(0)[3].checked);
         wait(400);
         fv->viewport()->grab().save(out + "/9b_form_filled.png");
+    }
+
+    // the Pages list scrolls by pixels, one wheel step as far as on the page
+    {
+        DocumentTab *pt = w->currentTab();
+        auto *list = pt->findChild<QListWidget *>();
+        const QSize old = w->size();
+        w->resize(old.width(), 700);
+        wait(300);
+        QScrollBar *sb = list->verticalScrollBar();
+        sb->setValue(0);
+        const QPoint c = list->viewport()->rect().center();
+        QWheelEvent we(QPointF(c), QPointF(list->viewport()->mapToGlobal(c)), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
+                       Qt::NoScrollPhase, false);
+        QApplication::sendEvent(list->viewport(), &we);
+        const int after = sb->value();
+        const int itemH = list->visualItemRect(list->item(0)).height();
+        std::printf("     pages list: one wheel step scrolls %d px (preview %d px, range %d)\n", after, itemH, sb->maximum());
+        CHECK(list->verticalScrollMode() == QAbstractItemView::ScrollPerPixel);
+        CHECK(after == qMin(sb->maximum(), int(144 * PdfView::scrollSpeed())));
+        w->resize(old);
+        wait(200);
     }
 
     // page previews: the pages that come into view when the window grows are rendered as well

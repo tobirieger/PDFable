@@ -23,6 +23,7 @@
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTimer>
+#include <QWheelEvent>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -61,6 +62,10 @@ DocumentTab::DocumentTab(std::shared_ptr<Document> doc, QWidget *parent) : QWidg
     pages_->setSpacing(4);
     pages_->setContextMenuPolicy(Qt::CustomContextMenu);
     pages_->setToolTip(tr("Drag pages to reorder them. Right-click for more."));
+    // Scroll by pixels, not by whole previews, and by the same distance per wheel step as the page.
+    pages_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    pages_->verticalScrollBar()->setSingleStep(24);
+    pages_->viewport()->installEventFilter(this);
     side_->addTab(pages_, tr("Pages"));
     notes_ = new NotesPanel(doc_, view_);
     side_->addTab(notes_, tr("Notes"));
@@ -477,6 +482,18 @@ void DocumentTab::closeSearch()
 
 bool DocumentTab::eventFilter(QObject *o, QEvent *e)
 {
+    if (o == pages_->viewport() && e->type() == QEvent::Wheel) {
+        auto *we = static_cast<QWheelEvent *>(e);
+        if (we->modifiers() & Qt::ControlModifier) return false;
+        // as PdfView::wheelEvent: a mouse wheel step is 144 pixels, times the scroll speed preference
+        const qreal dy = we->pixelDelta().isNull() ? we->angleDelta().y() / 120.0 * 144.0 : we->pixelDelta().y();
+        QScrollBar *sb = pages_->verticalScrollBar();
+        wheelRest_ += dy * PdfView::scrollSpeed();
+        const int step = int(wheelRest_);
+        wheelRest_ -= step;
+        sb->setValue(sb->value() - step);
+        return true;
+    }
     if (o == searchEdit_ && e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
         closeSearch();
         return true;

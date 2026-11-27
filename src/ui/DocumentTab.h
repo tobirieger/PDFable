@@ -50,6 +50,7 @@ signals:
 
 protected:
     bool eventFilter(QObject *o, QEvent *e) override;
+    qreal wheelRest_ = 0;     // fractions of a pixel left over from touchpad scrolling in the Pages list
 private:
     void rebuildOutline();
     void rebuildPages();
