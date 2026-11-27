@@ -29,6 +29,7 @@
 #include <QVBoxLayout>
 #include <QLocale>
 #include <algorithm>
+#include <cmath>
 
 using namespace ink;
 
@@ -457,20 +458,64 @@ void DocumentTab::print()
     if (dlg.exec() != QDialog::Accepted) return;
     int from = printer.fromPage() > 0 ? printer.fromPage() - 1 : 0;
     int to = printer.toPage() > 0 ? printer.toPage() - 1 : doc_->pageCount() - 1;
-    QPainter p(&printer);
     QApplication::setOverrideCursor(Qt::WaitCursor);
+    printPages(printer, from, to);
+    QApplication::restoreOverrideCursor();
+}
+
+PrintPlacement DocumentTab::printPlacement(QSizeF page, const QRectF &paper, const QRectF &printable)
+{
+    // Turn the page when its orientation differs from the paper's, so a landscape page is not shrunk
+    // onto portrait paper. Print at actual size, centred on the paper, and let the printer's unprintable
+    // border fall away as other readers do; shrink only a page that is larger than the paper, then into
+    // the printable area so nothing of it is lost.
+    PrintPlacement pl;
+    pl.rotated = (page.width() > page.height()) != (paper.width() > paper.height()) && std::fabs(page.width() - page.height()) > 1;
+    const QSizeF onPaper = pl.rotated ? page.transposed() : page;
+    QRectF area = paper;
+    pl.scale = 1;
+    if (onPaper.width() > paper.width() + 0.5 || onPaper.height() > paper.height() + 0.5) {
+        area = printable;
+        pl.scale = qMin(printable.width() / onPaper.width(), printable.height() / onPaper.height());
+    }
+    const QSizeF sz = onPaper * pl.scale;
+    pl.target = QRectF(area.center() - QPointF(sz.width() / 2, sz.height() / 2), sz);
+    return pl;
+}
+
+void DocumentTab::printPages(QPrinter &printer, int from, int to)
+{
+    printer.setFullPage(true);       // painter coordinates cover the whole sheet, not just the printable area
+    const QPageLayout layout = printer.pageLayout();
+    const QRectF paper = layout.fullRectPoints();
+    const QRectF printable = layout.paintRectPoints();
+    const double res = printer.resolution();
+    // Render at the printer's own resolution, so the picture is not stretched by an odd factor; capped at
+    // 600 dpi (an A4 page is then about 35 megapixels, one page at a time).
+    const double dpi = qBound(150.0, res, 600.0);
+    const bool grey = printer.colorMode() == QPrinter::GrayScale;
+    QPainter p(&printer);
+    p.scale(res / 72.0, res / 72.0);   // paint in points
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
     for (int i = from; i <= to && i < doc_->pageCount(); ++i) {
         if (i > from) printer.newPage();
-        QSizeF ps = doc_->pageSize(i);
-        double s = 220.0 / 72.0;
+        const QSizeF ps = doc_->pageSize(i);
+        const PrintPlacement pl = printPlacement(ps, paper, printable);
+        const double s = dpi / 72.0 * pl.scale;
         QImage img;
-        try { img = doc_->render(i, s, QRect(0, 0, int(ps.width() * s), int(ps.height() * s))); } catch (const PdfError &) {}
+        try { img = doc_->render(i, s, QRect(0, 0, int(std::ceil(ps.width() * s)), int(std::ceil(ps.height() * s)))); } catch (const PdfError &) {}
         if (img.isNull()) continue;
-        QRectF target = p.viewport();
-        QSizeF sz = QSizeF(img.size()).scaled(target.size(), Qt::KeepAspectRatio);
-        p.drawImage(QRectF(QPointF((target.width() - sz.width()) / 2, (target.height() - sz.height()) / 2), sz), img);
+        if (grey) img = img.convertToFormat(QImage::Format_Grayscale8);
+        p.save();
+        if (pl.rotated) {        // a quarter turn clockwise: the page's top edge ends up on the right
+            p.translate(pl.target.topRight());
+            p.rotate(90);
+            p.drawImage(QRectF(0, 0, pl.target.height(), pl.target.width()), img);
+        } else {
+            p.drawImage(pl.target, img);
+        }
+        p.restore();
     }
-    QApplication::restoreOverrideCursor();
 }
 
 void DocumentTab::closeSearch()

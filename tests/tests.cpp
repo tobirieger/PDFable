@@ -14,6 +14,8 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QPrinter>
+#include <QPageSize>
 #include <QMouseEvent>
 #include <QFileInfo>
 #include <QFrame>
@@ -815,6 +817,67 @@ int main(int argc, char **argv)
         made.render(8, 0.5, QRect(0, 0, 225, 150)).save(out + "/8g_image_page.png");
         CHECK(QColor(made.render(8, 0.5, QRect(0, 0, 225, 150)).pixel(100, 70)).red() > 150);
         c->close();
+    }
+
+    // printing: actual size on the paper, turned for landscape, shrunk only when too large
+    {
+        const QRectF a4(0, 0, 595.28, 841.89), a4p(10, 10, 575.28, 821.89);
+        PrintPlacement pl = DocumentTab::printPlacement(QSizeF(595.28, 841.89), a4, a4p);
+        CHECK(!pl.rotated && std::fabs(pl.scale - 1) < 1e-9 && std::fabs(pl.target.left()) < 1e-6 && std::fabs(pl.target.width() - 595.28) < 1e-6);
+        pl = DocumentTab::printPlacement(QSizeF(419.53, 595.28), a4, a4p);  // A5 on A4: actual size, centred
+        CHECK(!pl.rotated && pl.scale == 1 && std::fabs(pl.target.center().y() - a4.center().y()) < 1e-6 && pl.target.top() > 0);
+        pl = DocumentTab::printPlacement(QSizeF(841.89, 595.28), a4, a4p);   // landscape A4: turned, actual size
+        CHECK(pl.rotated && std::fabs(pl.scale - 1) < 1e-9);
+        pl = DocumentTab::printPlacement(QSizeF(841.89, 1190.55), a4, a4p);  // A3 on A4: into the printable area
+        std::printf("     A3 on A4: scale %.3f, target %.1f,%.1f %.1fx%.1f\n", pl.scale, pl.target.x(), pl.target.y(), pl.target.width(), pl.target.height());
+        CHECK(!pl.rotated && pl.scale < 0.7 && a4p.adjusted(-1e-6, -1e-6, 1e-6, 1e-6).contains(pl.target));
+
+        // end to end: print page 1 to a PDF on paper of its own size; it must come out at the same size
+        // and position as the page itself, not shrunk into the printable area
+        const QSizeF ps = d->pageSize(0);
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setOutputFormat(QPrinter::PdfFormat);
+        printer.setOutputFileName(out + "/printed.pdf");
+        printer.setPageSize(QPageSize(ps, QPageSize::Point));
+        printer.setPageMargins(QMarginsF(12, 12, 12, 12), QPageLayout::Point);
+        tab->printPages(printer, 0, 0);
+        Document printed;
+        printed.open(out + "/printed.pdf");
+        const QSizeF pps = printed.pageSize(0);
+        const double s = 1.0;
+        const QRect clip(0, 0, int(ps.width() * s), int(ps.height() * s));
+        QImage a = d->render(0, s, clip).convertToFormat(QImage::Format_Grayscale8);
+        QImage b = printed.render(0, s, clip).convertToFormat(QImage::Format_Grayscale8);
+        auto inkBox = [](const QImage &im) {   // bounding box of the dark pixels
+            QRect r;
+            for (int y = 0; y < im.height(); ++y)
+                for (int x = 0; x < im.width(); ++x)
+                    if (qGray(im.pixel(x, y)) < 128) r |= QRect(x, y, 1, 1);
+            return r;
+        };
+        const QRect ia = inkBox(a), ib = inkBox(b);
+        std::printf("     printed %.0fx%.0f pt page on %.0fx%.0f pt paper; ink at %d,%d-%d,%d, original %d,%d-%d,%d\n", ps.width(), ps.height(),
+                    pps.width(), pps.height(), ib.left(), ib.top(), ib.right(), ib.bottom(), ia.left(), ia.top(), ia.right(), ia.bottom());
+        CHECK(printed.pageCount() == 1 && std::fabs(pps.width() - ps.width()) < 1 && std::fabs(pps.height() - ps.height()) < 1);
+        // shrunk into the printable area (as before) the ink would be several points off at the edges
+        CHECK(!ia.isEmpty() && std::abs(ia.left() - ib.left()) <= 1 && std::abs(ia.top() - ib.top()) <= 1 &&
+              std::abs(ia.right() - ib.right()) <= 1 && std::abs(ia.bottom() - ib.bottom()) <= 1);
+        // a portrait page on landscape paper is turned a quarter clockwise, still at actual size:
+        // the page's left margin becomes the top margin
+        QPrinter land(QPrinter::HighResolution);
+        land.setOutputFormat(QPrinter::PdfFormat);
+        land.setOutputFileName(out + "/printed-land.pdf");
+        land.setPageSize(QPageSize(QSizeF(ps.height(), ps.width()), QPageSize::Point));
+        land.setPageOrientation(QPageLayout::Portrait);
+        tab->printPages(land, 0, 0);
+        Document turned;
+        turned.open(out + "/printed-land.pdf");
+        const QSizeF tps = turned.pageSize(0);
+        const QRect ic = inkBox(turned.render(0, 1.0, QRect(0, 0, int(tps.width()), int(tps.height()))).convertToFormat(QImage::Format_Grayscale8));
+        std::printf("     turned onto %.0fx%.0f pt paper: ink at %d,%d-%d,%d\n", tps.width(), tps.height(), ic.left(), ic.top(), ic.right(), ic.bottom());
+        CHECK(tps.width() > tps.height());
+        CHECK(std::abs(ic.top() - ia.left()) <= 1 && std::abs(ic.bottom() - ia.right()) <= 1 &&
+              std::abs(int(tps.width()) - 1 - ic.left() - ia.bottom()) <= 2 && std::abs(int(tps.width()) - 1 - ic.right() - ia.top()) <= 2);
     }
 
     // tabs: second document, tear off into a new window, drop back
