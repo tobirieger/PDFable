@@ -156,6 +156,8 @@ MainWindow::MainWindow()
     pen_.color = penColors_[penIdx_];
     hl_.color = hlColors_[hlIdx_];
     buildActions();
+    menuBar()->setVisible(st.value("ui/menuBar", true).toBool());
+    updateMenuButton();
     connect(tabs_, &QTabWidget::currentChanged, this, [this] { applyTools(); updateUi(); });
     connect(tabs_, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
     connect(tabs_->bar(), &TabBar::detachRequested, this, &MainWindow::startTabDrag);
@@ -302,6 +304,10 @@ void MainWindow::buildActions()
         setPageTheme(PageColors::theme() == PageTheme::Dark ? PageTheme::Light : PageTheme::Dark);
     });
     add(viewM, tr("F&ull screen"), QKeySequence("F11"), [this] { toggleFullScreen(); });
+    showMenuBarAct_ = add(viewM, tr("Show &menu bar"), QKeySequence("Ctrl+Shift+M"), [] {
+        MainWindow::setMenuBarShown(!QSettings().value("ui/menuBar", true).toBool());
+    });
+    showMenuBarAct_->setCheckable(true);
 
     QMenu *tools = menuBar()->addMenu(tr("&Tools"));
     toolGroup_ = new QActionGroup(this);
@@ -371,6 +377,17 @@ void MainWindow::buildActions()
     deco(save, "save", tr("Save"));
     deco(undo, "undo", tr("Undo"));
     deco(redo, "redo", tr("Redo"));
+    // With the menu bar hidden, its menus open from this button, the toolbar's first so it never overflows.
+    menuButton_ = new QToolButton;
+    menuButton_->setObjectName("menuButton");
+    menuButton_->setIcon(Theme::icon("menu"));
+    menuButton_->setProperty("pdfableIcon", QStringLiteral("menu"));
+    menuButton_->setToolTip(tr("Menu  (Ctrl+Shift+M shows the menu bar)"));
+    menuButton_->setPopupMode(QToolButton::InstantPopup);
+    auto *allMenus = new QMenu(menuButton_);
+    for (QAction *m : menuBar()->actions()) allMenus->addAction(m);
+    menuButton_->setMenu(allMenus);
+    menuButtonAct_ = tb->addWidget(menuButton_);
     tb->addAction(open);
     tb->addAction(save);
     tb->addSeparator();
@@ -549,6 +566,11 @@ void MainWindow::setInterfaceMode(Theme::Mode m)
             if (!icon.isEmpty()) a->setIcon(Theme::icon(icon));
             if (a->objectName() == "darkInterfaceAction") a->setChecked(Theme::isDark());
         }
+        if (w->menuButton_) w->menuButton_->setIcon(Theme::icon("menu"));
+        // Qt sets the overflow buttons' icons only once; give them the new theme's colour
+        for (QToolButton *b : w->findChildren<QToolButton *>())
+            if (b->objectName() == "qt_toolbar_ext_button" || b->objectName() == "qt_menubar_ext_button")
+                b->setIcon(Theme::icon("more"));
         w->refreshToolOptions();
         w->update();
     }
@@ -941,7 +963,7 @@ void MainWindow::restoreSession()
 void MainWindow::toggleFullScreen()
 {
     if (isFullScreen()) {
-        menuBar()->show();
+        menuBar()->setVisible(QSettings().value("ui/menuBar", true).toBool());
         statusBar()->show();
         if (wasMaximized_) showMaximized();
         else showNormal();
@@ -951,6 +973,23 @@ void MainWindow::toggleFullScreen()
         statusBar()->hide();
         showFullScreen();
     }
+    updateMenuButton();
+}
+
+void MainWindow::setMenuBarShown(bool on)
+{
+    QSettings().setValue("ui/menuBar", on);
+    for (MainWindow *w : std::as_const(g_windows)) {
+        if (!w->isFullScreen()) w->menuBar()->setVisible(on);
+        w->updateMenuButton();
+    }
+}
+
+void MainWindow::updateMenuButton()
+{
+    const bool shown = menuBar()->isVisibleTo(this);
+    if (menuButtonAct_) menuButtonAct_->setVisible(!shown);
+    if (showMenuBarAct_) showMenuBarAct_->setChecked(QSettings().value("ui/menuBar", true).toBool());
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *e)

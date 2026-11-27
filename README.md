@@ -194,7 +194,7 @@ resets the undo history.
 ## Shortcuts
 
 V select, H hand, P pen, M highlighter, E eraser, T text box, N sticky note, Ctrl+F find, Ctrl+H highlight selection,
-Ctrl+Shift+H handwritten signature, F4 sidebar, Ctrl+1/2/0 fit page / fit width / 100 %, Left/Right previous / next
+Ctrl+Shift+H handwritten signature, F4 sidebar, Ctrl+Shift+M menu bar, Ctrl+1/2/0 fit page / fit width / 100 %, Left/Right previous / next
 page, Alt+Left/Right history.
 
 ## Licence

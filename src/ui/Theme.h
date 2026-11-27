@@ -2,6 +2,7 @@
 #pragma once
 #include <QColor>
 #include <QIcon>
+#include <QProxyStyle>
 #include <QString>
 
 class QApplication;
@@ -14,4 +15,11 @@ Mode mode();
 bool isDark();
 QColor accent();
 QIcon icon(const QString &name);
+
+class PdfableStyle : public QProxyStyle {
+public:
+    PdfableStyle();
+    QIcon standardIcon(StandardPixmap sp, const QStyleOption *opt = nullptr, const QWidget *w = nullptr) const override;
+    int pixelMetric(PixelMetric m, const QStyleOption *opt = nullptr, const QWidget *w = nullptr) const override;
+};
 }
