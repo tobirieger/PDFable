@@ -1771,11 +1771,16 @@ int main(int argc, char **argv)
 
     // the Pages list scrolls by pixels, one wheel step as far as on the page
     {
+        // a document with more pages than the list shows at once, so there is something to scroll
+        QFile::remove(out + "/scroll.pdf");
+        QFile::copy(sample, out + "/scroll.pdf");
+        CHECK(w->openFile(out + "/scroll.pdf"));
         DocumentTab *pt = w->currentTab();
         auto *list = pt->findChild<QListWidget *>();
         const QSize old = w->size();
         w->resize(old.width(), 700);
         wait(300);
+        CHECK(list->verticalScrollBar()->maximum() > int(144 * PdfView::scrollSpeed()));
         QScrollBar *sb = list->verticalScrollBar();
         sb->setValue(0);
         const QPoint c = list->viewport()->rect().center();
@@ -1786,7 +1791,7 @@ int main(int argc, char **argv)
         const int itemH = list->visualItemRect(list->item(0)).height();
         std::printf("     pages list: one wheel step scrolls %d px (preview %d px, range %d)\n", after, itemH, sb->maximum());
         CHECK(list->verticalScrollMode() == QAbstractItemView::ScrollPerPixel);
-        CHECK(after == qMin(sb->maximum(), int(144 * PdfView::scrollSpeed())));
+        CHECK(after == int(144 * PdfView::scrollSpeed()));
         w->resize(old);
         wait(200);
     }
