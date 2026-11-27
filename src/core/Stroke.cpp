@@ -4,12 +4,29 @@
 #include <QLineF>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace ink {
 
 static inline QPointF mid(const QPointF &a, const QPointF &b) { return (a + b) / 2; }
 static inline qreal dist(const QPointF &a, const QPointF &b) { return std::hypot(a.x() - b.x(), a.y() - b.y()); }
+
+static float s_thin = 0.3f, s_thick = 1.7f;
+
+void StrokeBuilder::setPressureRange(float thinnest, float thickest)
+{
+    s_thin = qBound(0.05f, thinnest, 1.0f);
+    s_thick = qBound(1.0f, thickest, 4.0f);
+}
+float StrokeBuilder::pressureThinnest() { return s_thin; }
+float StrokeBuilder::pressureThickest() { return s_thick; }
+
+float StrokeBuilder::widthFor(float pressure) const
+{
+    return pressure_ ? base_ * (s_thin + (s_thick - s_thin) * qBound(0.f, pressure, 1.f)) : base_;
+}
 
 void StrokeBuilder::begin(QPointF p, float pressure, qint64 t, float baseWidth, bool usePressure, double scale)
 {
@@ -21,7 +38,7 @@ void StrokeBuilder::begin(QPointF p, float pressure, qint64 t, float baseWidth, 
     shape_ = Shape::None;
     adjusting_ = false;
     snapPts_.clear();
-    float w = pressure_ ? base_ * (0.35f + 1.3f * pressure) : base_;
+    float w = widthFor(pressure);
     f_.push_back(p); fw_.push_back(w);
     out_.push_back(p); outW_.push_back(w);
     stable_ = 1;
@@ -75,7 +92,7 @@ int StrokeBuilder::add(QPointF p, float pressure, qint64 t)
     QPointF fp = prev + (p - prev) * alpha;
     if (dist(fp, prev) * scale_ < 0.5) return out_.size();
     lastT_ = t;
-    float target = pressure_ ? base_ * (0.35f + 1.3f * qBound(0.f, pressure, 1.f)) : base_;
+    float target = widthFor(pressure);
     float w = fw_.last() + 0.35f * (target - fw_.last());
     f_.push_back(fp);
     fw_.push_back(w);
@@ -112,7 +129,7 @@ bool StrokeBuilder::snapToShape()
     float wsum = 0;
     for (float w : fw_) wsum += w;
     float wavg = wsum / fw_.size();
-    auto finish = [&](Shape s, const QVector<QPointF> &pts) {
+    auto finish = [&](Shape s, const QVector<QPointF> &pts, bool uniform = false) {
         out_ = pts;
         outW_.fill(wavg, pts.size());
         stable_ = out_.size();
@@ -121,7 +138,7 @@ bool StrokeBuilder::snapToShape()
         grab_ = b;
         adjusting_ = false;
         QRectF bb = QPolygonF(pts).boundingRect();
-        uniform_ = s != Shape::Line && std::fabs(bb.width() - bb.height()) < 1e-6;
+        uniform_ = uniform || (s != Shape::Line && std::fabs(bb.width() - bb.height()) < 1e-6);
         anchor_ = bb.topLeft();      // the corner farthest from the pen stays fixed
         for (const QPointF &c : {bb.topRight(), bb.bottomRight(), bb.bottomLeft()})
             if (dist(c, b) > dist(anchor_, b)) anchor_ = c;
@@ -140,34 +157,83 @@ bool StrokeBuilder::snapToShape()
         return finish(Shape::Line, {a, snapAngle(a, b)});
     }
 
-    QRectF bb(a, QSizeF(0, 0));
-    for (const QPointF &p : f_) {
-        bb.setLeft(qMin(bb.left(), p.x())); bb.setRight(qMax(bb.right(), p.x()));
-        bb.setTop(qMin(bb.top(), p.y())); bb.setBottom(qMax(bb.bottom(), p.y()));
+    // Rectangle and ellipse are both fitted at small rotations and compared by their mean distance to
+    // the samples, in page units: relative errors made a long thin rectangle (a box around a line of
+    // text) almost impossible to draw. A rectangle's edges are robust quantiles of the samples, so an
+    // overshoot at a corner or past the starting point does not move them; an ellipse touches the extremes.
+    const int n = f_.size();
+    const QPointF centroid = std::accumulate(f_.begin(), f_.end(), QPointF()) / n;
+    QVector<qreal> xs(n), ys(n);
+    struct Fit { qreal angle = 0, dist = 1e300; QRectF box; };
+    auto quantile = [n](QVector<qreal> v, qreal q) {
+        const int k = qBound(0, int(std::lround(q * (n - 1))), n - 1);
+        std::nth_element(v.begin(), v.begin() + k, v.end());
+        return v[k];
+    };
+    auto fitAt = [&](qreal deg, Fit &rect, Fit &ell) {
+        const qreal t = deg * M_PI / 180, ct = std::cos(t), st = std::sin(t);
+        for (int i = 0; i < n; ++i) {
+            const QPointF d = f_[i] - centroid;
+            xs[i] = d.x() * ct + d.y() * st;      // turned by -angle
+            ys[i] = -d.x() * st + d.y() * ct;
+        }
+        const QRectF rb(QPointF(quantile(xs, 0.03), quantile(ys, 0.03)), QPointF(quantile(xs, 0.97), quantile(ys, 0.97)));
+        const QRectF eb(QPointF(*std::min_element(xs.begin(), xs.end()), *std::min_element(ys.begin(), ys.end())),
+                        QPointF(*std::max_element(xs.begin(), xs.end()), *std::max_element(ys.begin(), ys.end())));
+        const qreal erx = qMax(eb.width() / 2, 1e-6), ery = qMax(eb.height() / 2, 1e-6);
+        const QPointF ec = eb.center();
+        qreal rd = 0, ed = 0;
+        for (int i = 0; i < n; ++i) {
+            rd += qMin(qMin(std::fabs(xs[i] - rb.left()), std::fabs(xs[i] - rb.right())),
+                       qMin(std::fabs(ys[i] - rb.top()), std::fabs(ys[i] - rb.bottom())));
+            const qreal dx = xs[i] - ec.x(), dy = ys[i] - ec.y();   // first-order (Sampson) distance to the ellipse
+            const qreal F = dx * dx / (erx * erx) + dy * dy / (ery * ery) - 1;
+            ed += std::fabs(F) / qMax(2 * std::hypot(dx / (erx * erx), dy / (ery * ery)), 1e-9);
+        }
+        rect = Fit{deg, rd / n, rb};
+        ell = Fit{deg, ed / n, eb};
+    };
+    Fit rect, ell, rect0, ell0;
+    fitAt(0, rect0, ell0);
+    rect = rect0;
+    ell = ell0;
+    for (int deg = -20; deg <= 20; ++deg) {
+        if (deg == 0) continue;
+        Fit r, e;
+        fitAt(deg, r, e);
+        if (r.dist < rect.dist) rect = r;
+        if (e.dist < ell.dist) ell = e;
     }
-    qreal rx = bb.width() / 2, ry = bb.height() / 2;
-    if (rx * scale_ < 6 || ry * scale_ < 6) return false;
-    QPointF c = bb.center();
-    qreal eErr = 0, rErr = 0;
-    for (const QPointF &p : f_) {
-        eErr += std::fabs(std::hypot((p.x() - c.x()) / rx, (p.y() - c.y()) / ry) - 1);
-        rErr += qMin(qMin(std::fabs(p.x() - bb.left()), std::fabs(p.x() - bb.right())),
-                     qMin(std::fabs(p.y() - bb.top()), std::fabs(p.y() - bb.bottom()))) / qMin(rx, ry);
+    // Nearly level and the level fit hardly worse: meant to be level.
+    const qreal levelSlack = 1.5 / scale_;
+    if (rect0.dist <= rect.dist + levelSlack) rect = rect0;
+    if (ell0.dist <= ell.dist + levelSlack) ell = ell0;
+
+    auto turned = [&](const Fit &f, QPointF local) {
+        const qreal t = f.angle * M_PI / 180;
+        return centroid + QPointF(local.x() * std::cos(t) - local.y() * std::sin(t), local.x() * std::sin(t) + local.y() * std::cos(t));
+    };
+    const qreal shortHalf = qMin(rect.box.width(), rect.box.height()) / 2;
+    if (rect.dist < ell.dist && shortHalf * scale_ >= 6 && rect.dist < 0.1 * shortHalf + 4 / scale_) {
+        QRectF r = rect.box;
+        if (std::fabs(r.width() - r.height()) < 0.12 * qMax(r.width(), r.height())) {   // square
+            const qreal side = (r.width() + r.height()) / 2;
+            r = QRectF(r.center() - QPointF(side / 2, side / 2), QSizeF(side, side));
+        }
+        return finish(Shape::Rect, {turned(rect, r.topLeft()), turned(rect, r.topRight()), turned(rect, r.bottomRight()),
+                                    turned(rect, r.bottomLeft()), turned(rect, r.topLeft())},
+                      rect.angle != 0);   // a turned shape is resized uniformly, so it keeps its form
     }
-    eErr /= f_.size();
-    rErr /= f_.size();
-    if (std::fabs(rx - ry) < 0.12 * qMax(rx, ry)) rx = ry = (rx + ry) / 2;   // circle / square
-    if (eErr < 0.14 && eErr <= rErr) {
+    qreal erx = ell.box.width() / 2, ery = ell.box.height() / 2;
+    if (qMin(erx, ery) * scale_ < 6) return false;
+    if (std::fabs(erx - ery) < 0.12 * qMax(erx, ery)) erx = ery = (erx + ery) / 2;   // circle
+    if (ell.dist < 0.14 * qMin(erx, ery) + 2 / scale_) {
         QVector<QPointF> pts;
         for (int i = 0; i <= 72; ++i) {
             qreal t = 2 * M_PI * i / 72;
-            pts.push_back(c + QPointF(rx * std::cos(t), ry * std::sin(t)));
+            pts.push_back(turned(ell, ell.box.center() + QPointF(erx * std::cos(t), ery * std::sin(t))));
         }
-        return finish(Shape::Ellipse, pts);
-    }
-    if (rErr < 0.14) {
-        QRectF r(c.x() - rx, c.y() - ry, 2 * rx, 2 * ry);
-        return finish(Shape::Rect, {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft(), r.topLeft()});
+        return finish(Shape::Ellipse, pts, ell.angle != 0);
     }
     return false;
 }
