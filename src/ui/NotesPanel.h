@@ -74,6 +74,7 @@ protected:
     void focusInEvent(QFocusEvent *e) override;
     void focusOutEvent(QFocusEvent *e) override;
 private:
+    void showHoverTip(int id);
     void relayout();
     void goTo(const ink::MarkupNote &n, bool always);    // select a note, and bring its marking into view
     void updateLinks();

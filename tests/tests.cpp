@@ -33,6 +33,7 @@
 #include <QTabWidget>
 #include <QTabletEvent>
 #include <QToolButton>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QTimer>
 #include <QWheelEvent>
@@ -1428,6 +1429,68 @@ int main(int argc, char **argv)
         std::printf("     sticky note moved by %.1f, %.1f pt\n", r1.x() - r0.x(), r1.y() - r0.y());
         CHECK(std::fabs(r1.x() - r0.x() - 60 / ppp) < 1 && std::fabs(r1.y() - r0.y() - 40 / ppp) < 1 && r1.size() == r0.size());
         CHECK(stickies().value(0).id == sid && stickies().value(0).text.startsWith("Ask about"));
+        {   // dragged far past the page's corner it stops at the edge, and one already beside the page comes back
+            const QSizeF ps = nd->pageSize(1);
+            const QRectF pageBox(QPointF(0, 0), ps);
+            const QPointF from = nv->pageToView(1, r1.center());
+            const QPointF far = nv->pageToView(1, QPointF(ps.width() + 300, ps.height() + 300));
+            nv->testPointer(0, from, -1, 43500);
+            nv->testPointer(1, far, -1, 43510);
+            nv->testPointer(2, far, -1, 43520);
+            wait(300);
+            const QRectF r2 = stickies().value(0).rect;
+            std::printf("     dragged past the corner: %.1f,%.1f %.1fx%.1f on a %.0fx%.0f page\n", r2.x(), r2.y(), r2.width(), r2.height(), ps.width(), ps.height());
+            CHECK(pageBox.adjusted(-0.01, -0.01, 0.01, 0.01).contains(r2) && std::fabs(r2.right() - ps.width()) < 0.5 && std::fabs(r2.bottom() - ps.height()) < 0.5);
+            nd->setAnnotRect(1, sid, r2.translated(-ps.width() - 200, 0));   // as an earlier version could leave it
+            wait(200);
+            CHECK(!stickies().value(0).rect.intersects(pageBox));
+            nv->selectAnnot(1, sid);                          // from its card in the Notes sidebar
+            wait(200);
+            const QRectF r3 = stickies().value(0).rect;
+            std::printf("     brought back to %.1f,%.1f\n", r3.x(), r3.y());
+            CHECK(pageBox.adjusted(-0.01, -0.01, 0.01, 0.01).contains(r3) && std::fabs(r3.x()) < 0.5 && r3.size() == r2.size());
+            nd->undo();                                       // bringing it back is one step
+            CHECK(!stickies().value(0).rect.intersects(pageBox));
+            nd->redo();
+            nd->setAnnotRect(1, sid, r1);
+            wait(200);
+            nv->selectAnnot(1, sid);
+        }
+        {   // with the Notes tab out of sight, hovering over the sticky note shows its text next to the icon
+            QTabWidget *nside = nullptr;
+            for (QTabWidget *t : w->findChildren<QTabWidget *>()) if (t->indexOf(np) >= 0) nside = t;
+            const int notesIdx = nside ? nside->indexOf(np) : -1;
+            nv->selectAnnot(1, -1);                            // nothing selected
+            auto hoverAt = [&](QPointF pagePt) {      // view position taken now: switching tabs may re-lay the view
+                const QPointF vp = nv->pageToView(1, pagePt);
+                QMouseEvent mv(QEvent::MouseMove, vp, nv->viewport()->mapToGlobal(vp), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(nv->viewport(), &mv);
+                wait(100);
+            };
+            const QPointF icon = stickies().value(0).rect.center();
+            const QPointF away(300, 150);
+            const int scroll0 = nv->verticalScrollBar()->value();
+            nside->setCurrentIndex(notesIdx == 1 ? 0 : 1);      // Pages (or Outline)
+            wait(200);
+            hoverAt(away);
+            QToolTip::hideText();
+            hoverAt(icon);
+            const bool shownHidden = QToolTip::isVisible() && QToolTip::text().contains("Ask about the boundary term.");
+            std::printf("     hover with Notes hidden: tooltip %d \"%s\"\n", QToolTip::isVisible(), qPrintable(QToolTip::text().left(80)));
+            hoverAt(away);
+            QToolTip::hideText();
+            nside->setCurrentIndex(notesIdx);                  // the Notes tab shows the card instead
+            wait(200);
+            hoverAt(icon);
+            const bool shownVisible = QToolTip::isVisible();
+            hoverAt(away);
+            QToolTip::hideText();
+            CHECK(nside && shownHidden && !shownVisible);
+            wait(200);
+            nv->verticalScrollBar()->setValue(scroll0);        // showing another tab may move the document (focus)
+            wait(200);
+            to = nv->pageToView(1, stickies().value(0).rect.center());
+        }
         QMouseEvent dbl(QEvent::MouseButtonDblClick, to, nv->viewport()->mapToGlobal(to), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(nv->viewport(), &dbl);
         wait(50);
